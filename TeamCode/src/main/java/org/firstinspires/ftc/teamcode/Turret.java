@@ -1,0 +1,368 @@
+package org.firstinspires.ftc.teamcode;
+
+import com.pedropathing.math.Pose;
+import com.pedropathing.math.Velocity;
+import com.pedropathing.utils.Angle;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.HardwareMap;
+
+import org.firstinspires.ftc.robotcore.external.Telemetry;
+
+/**
+ * Field-relative turret aim from odometry only (Pinpoint dead wheels + its IMU, read through
+ * Pedro). No camera.
+ *
+ * Every loop: take the robot pose and velocity, find the bearing from the turret pivot to the
+ * upward CELL of our HIVE, and drive the turret there with PIDF. The feedforward is the turret
+ * speed needed to cancel the robot's own spinning and driving, so the turret stays locked on
+ * while the robot moves instead of lagging behind it.
+ *
+ * Turret angles are degrees from robot forward, positive = RIGHT (clockwise), same as the old
+ * turret code and the trim buttons. The turret must face forward when the OpMode inits unless
+ * an angle is handed over from AUTO with setAngleReference().
+ */
+public class Turret {
+    // ---- hardware (same wiring as the DECODE robot) ----
+    public static String MOTOR_NAME = "turretMotor";
+    // the turret motor's encoder cable is plugged into the frontRightMotor port
+    public static String ENCODER_PORT_NAME = "frontRightMotor";
+    public static double TICKS_PER_MOTOR_REV = 1425.1;   // goBILDA 50.9:1 gearmotor
+    public static double GEAR_RATIO = 2.59375;           // motor revs per turret rev
+    public static double ENCODER_DIRECTION = -1.0;       // makes a right turn read positive
+    public static double POWER_DIRECTION = 1.0;          // positive power turns the turret right
+    public static double MIN_ANGLE_DEG = -180.0;         // cable limits relative to forward
+    public static double MAX_ANGLE_DEG = 180.0;
+    // turret pivot relative to the robot's odometry tracking center, inches
+    public static double PIVOT_FORWARD_IN = 0.0;
+    public static double PIVOT_LEFT_IN = 0.0;
+
+    // ---- PIDF, in power and degrees ----
+    public static double kP = 0.007;
+    public static double kI = 0.0005;
+    public static double kD = 0.0004;
+    // power per deg/s: a 117 RPM motor through 2.59375:1 turns the turret ~270 deg/s at full power
+    public static double kV = 1.0 / 270.0;
+    public static double kS = 0.08;             // static friction kick (the old MIN_POWER)
+    public static double I_ZONE_DEG = 5.0;
+    public static double MAX_I_POWER = 0.1;
+    public static double MAX_POWER = 0.9;
+    public static double DEADBAND_DEG = 0.4;    // settled inside this: stop commanding, no chatter
+    public static double ON_TARGET_DEG = 1.5;
+    public static double VELOCITY_FILTER = 0.5; // weight of the newest turret velocity sample
+    // when the target is only this far past a limit, stay pinned instead of swinging 360
+    public static double WRAP_HYSTERESIS_DEG = 15.0;
+    public static double TRIM_LIMIT_DEG = 45.0;
+
+    // aim where the CELL will be relative to us when the ball arrives (uses
+    // ShotTable.TIME_OF_FLIGHT_S); 0 turns shoot-while-moving compensation off
+    public static double LEAD_GAIN = 1.0;
+
+    public enum Mode {
+        AUTO_AIM,
+        HOLD_FORWARD,
+        MANUAL,
+        OFF
+    }
+
+    private final DcMotorEx motor;
+    private final DcMotorEx encoder;
+    private final Battery battery;
+    private final PIDFController pidf = new PIDFController(kP, kI, kD, kV, kS);
+
+    private Mode mode = Mode.OFF;
+    private Alliance alliance = Alliance.RED;
+    private Field.CellSide upCell = Field.startingUpCell(Alliance.RED);
+    private double zeroTicks;
+    private double trimDeg = 0.0;
+    private double manualPower = 0.0;
+
+    private double angleDeg = 0.0;
+    private double lastAngleDeg = 0.0;
+    private double velocityDegPerSec = 0.0;
+    private double aimAngleDeg = 0.0;
+    private double aimRateDegPerSec = 0.0;
+    private double targetDeg = 0.0;
+    private double targetRateDegPerSec = 0.0;
+    private double errorDeg = 0.0;
+    private double power = 0.0;
+    private double lastPowerWritten = Double.NaN;
+    private double distanceIn = Double.NaN;
+    private double trueDistanceIn = Double.NaN;
+    private boolean poseValid = false;
+    private boolean limited = false;
+    private long lastNs;
+
+    public Turret(HardwareMap hardwareMap, Battery battery) {
+        motor = hardwareMap.get(DcMotorEx.class, MOTOR_NAME);
+        encoder = hardwareMap.get(DcMotorEx.class, ENCODER_PORT_NAME);
+        this.battery = battery;
+
+        motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        writePower(0.0);
+
+        zeroTicks = encoder.getCurrentPosition();
+        lastNs = System.nanoTime();
+    }
+
+    /** Tell the turret its current angle (e.g. the angle AUTO ended at) instead of forward = 0. */
+    public void setAngleReference(double currentAngleDeg) {
+        zeroTicks = encoder.getCurrentPosition() - currentAngleDeg * ticksPerDegree() * ENCODER_DIRECTION;
+        angleDeg = currentAngleDeg;
+        lastAngleDeg = currentAngleDeg;
+        velocityDegPerSec = 0.0;
+    }
+
+    public void update(Pose pose, Velocity velocity) {
+        long now = System.nanoTime();
+        double dt = Math.min(Math.max((now - lastNs) / 1e9, 0.001), 0.1);
+        lastNs = now;
+
+        angleDeg = readAngleDeg();
+        velocityDegPerSec += VELOCITY_FILTER * ((angleDeg - lastAngleDeg) / dt - velocityDegPerSec);
+        lastAngleDeg = angleDeg;
+
+        poseValid = pose != null && isFinite(pose.x()) && isFinite(pose.y()) && isFinite(pose.heading());
+        if (poseValid) {
+            computeAim(pose, velocity);
+        }
+
+        double desired;
+        double desiredRate = 0.0;
+        switch (mode) {
+            case AUTO_AIM:
+                if (poseValid) {
+                    desired = aimAngleDeg + trimDeg;
+                    desiredRate = aimRateDegPerSec;
+                } else {
+                    desired = angleDeg;
+                }
+                break;
+            case HOLD_FORWARD:
+                desired = 0.0;
+                break;
+            case MANUAL:
+                pidf.reset();
+                applyPower(manualPower);
+                return;
+            default:
+                pidf.reset();
+                applyPower(0.0);
+                return;
+        }
+
+        targetDeg = chooseReachable(desired, angleDeg);
+        limited = Math.abs(wrapDeg(targetDeg - desired)) > 0.5;
+        targetRateDegPerSec = limited ? 0.0 : desiredRate;
+        errorDeg = targetDeg - angleDeg;
+
+        boolean settled = Math.abs(errorDeg) < DEADBAND_DEG && Math.abs(targetRateDegPerSec) < 2.0;
+        double output;
+        if (settled) {
+            pidf.reset();
+            output = 0.0;
+        } else {
+            pidf.setGains(kP, kI, kD, kV, kS);
+            pidf.integralZone = I_ZONE_DEG;
+            pidf.maxIntegralOutput = MAX_I_POWER;
+            output = pidf.calculate(errorDeg, targetRateDegPerSec - velocityDegPerSec,
+                    targetRateDegPerSec, dt, true);
+            output *= battery.compensation();
+        }
+        applyPower(Math.max(-MAX_POWER, Math.min(MAX_POWER, output)));
+    }
+
+    private void computeAim(Pose pose, Velocity velocity) {
+        double heading = pose.heading();
+        double cos = Math.cos(heading);
+        double sin = Math.sin(heading);
+        double offsetX = PIVOT_FORWARD_IN * cos - PIVOT_LEFT_IN * sin;
+        double offsetY = PIVOT_FORWARD_IN * sin + PIVOT_LEFT_IN * cos;
+        double pivotX = pose.x() + offsetX;
+        double pivotY = pose.y() + offsetY;
+
+        // field-frame velocity of the pivot: robot velocity plus spin carrying the offset around
+        double omega = 0.0;
+        double vx = 0.0;
+        double vy = 0.0;
+        if (velocity != null && isFinite(velocity.vx) && isFinite(velocity.vy) && isFinite(velocity.omega)) {
+            omega = velocity.omega;
+            vx = velocity.vx - omega * offsetY;
+            vy = velocity.vy + omega * offsetX;
+        }
+
+        Pose cell = Field.cellAimPoint(alliance, upCell);
+        trueDistanceIn = Math.hypot(cell.x() - pivotX, cell.y() - pivotY);
+
+        double aimX = cell.x();
+        double aimY = cell.y();
+        if (LEAD_GAIN != 0.0) {
+            // two passes: flight time depends on distance, which depends on the lead
+            for (int i = 0; i < 2; i++) {
+                double flightTime = ShotTable.timeOfFlight(Math.hypot(aimX - pivotX, aimY - pivotY)) * LEAD_GAIN;
+                aimX = cell.x() - vx * flightTime;
+                aimY = cell.y() - vy * flightTime;
+            }
+        }
+
+        double dx = aimX - pivotX;
+        double dy = aimY - pivotY;
+        double rangeSquared = Math.max(dx * dx + dy * dy, 1.0);
+        distanceIn = Math.sqrt(rangeSquared);
+
+        // bearing relative to robot forward is counter-clockwise; turret angles are clockwise
+        double relative = Angle.normalizeSigned(Math.atan2(dy, dx) - heading);
+        aimAngleDeg = -Math.toDegrees(relative);
+
+        // d(atan2(dy, dx))/dt with the pivot moving at (vx, vy), minus the robot's own spin
+        double bearingRate = (dy * vx - dx * vy) / rangeSquared;
+        aimRateDegPerSec = -Math.toDegrees(bearingRate - omega);
+    }
+
+    private double chooseReachable(double desired, double current) {
+        double best = Double.NaN;
+        double bestGap = Double.POSITIVE_INFINITY;
+        for (int k = -2; k <= 2; k++) {
+            double candidate = desired + 360.0 * k;
+            if (candidate > MAX_ANGLE_DEG) {
+                if (candidate - MAX_ANGLE_DEG <= WRAP_HYSTERESIS_DEG && current > MAX_ANGLE_DEG - WRAP_HYSTERESIS_DEG) {
+                    return MAX_ANGLE_DEG;
+                }
+                continue;
+            }
+            if (candidate < MIN_ANGLE_DEG) {
+                if (MIN_ANGLE_DEG - candidate <= WRAP_HYSTERESIS_DEG && current < MIN_ANGLE_DEG + WRAP_HYSTERESIS_DEG) {
+                    return MIN_ANGLE_DEG;
+                }
+                continue;
+            }
+            double gap = Math.abs(candidate - current);
+            if (gap < bestGap) {
+                bestGap = gap;
+                best = candidate;
+            }
+        }
+        return Double.isNaN(best) ? Math.max(MIN_ANGLE_DEG, Math.min(MAX_ANGLE_DEG, desired)) : best;
+    }
+
+    private void applyPower(double requested) {
+        if ((angleDeg >= MAX_ANGLE_DEG && requested > 0.0) || (angleDeg <= MIN_ANGLE_DEG && requested < 0.0)) {
+            requested = 0.0;
+        }
+        power = requested;
+        writePower(POWER_DIRECTION * requested);
+    }
+
+    private void writePower(double value) {
+        // skip redundant writes; each one is a hub transaction
+        if (Double.isNaN(lastPowerWritten) || Math.abs(value - lastPowerWritten) > 0.005
+                || (value == 0.0 && lastPowerWritten != 0.0)) {
+            motor.setPower(value);
+            lastPowerWritten = value;
+        }
+    }
+
+    private double readAngleDeg() {
+        return (encoder.getCurrentPosition() - zeroTicks) * ENCODER_DIRECTION / ticksPerDegree();
+    }
+
+    private static double ticksPerDegree() {
+        return TICKS_PER_MOTOR_REV * GEAR_RATIO / 360.0;
+    }
+
+    private static double wrapDeg(double degrees) {
+        return Math.toDegrees(Angle.normalizeSigned(Math.toRadians(degrees)));
+    }
+
+    private static boolean isFinite(double value) {
+        return !Double.isNaN(value) && !Double.isInfinite(value);
+    }
+
+    public void setMode(Mode mode) {
+        if (mode != this.mode) {
+            pidf.reset();
+        }
+        this.mode = mode;
+    }
+
+    public Mode getMode() {
+        return mode;
+    }
+
+    public void setAlliance(Alliance alliance) {
+        this.alliance = alliance;
+    }
+
+    public void setUpCell(Field.CellSide upCell) {
+        this.upCell = upCell;
+    }
+
+    /** Call when the HIVE tips: the other CELL is now facing up. */
+    public void flipUpCell() {
+        upCell = upCell.flipped();
+    }
+
+    public Field.CellSide getUpCell() {
+        return upCell;
+    }
+
+    /** Positive = aim further right. */
+    public void adjustTrim(double deltaDeg) {
+        trimDeg = Math.max(-TRIM_LIMIT_DEG, Math.min(TRIM_LIMIT_DEG, trimDeg + deltaDeg));
+    }
+
+    public void resetTrim() {
+        trimDeg = 0.0;
+    }
+
+    public double getTrimDeg() {
+        return trimDeg;
+    }
+
+    /** Only used in MANUAL mode; positive = right. */
+    public void setManualPower(double power) {
+        manualPower = power;
+    }
+
+    public void stop() {
+        setMode(Mode.OFF);
+        applyPower(0.0);
+    }
+
+    public boolean isOnTarget() {
+        return mode == Mode.AUTO_AIM && poseValid && !limited && Math.abs(errorDeg) <= ON_TARGET_DEG;
+    }
+
+    /** Distance to the (lead-adjusted) aim point, which is what the shooter should use. */
+    public double getDistance() {
+        return distanceIn;
+    }
+
+    public double getAngleDeg() {
+        return angleDeg;
+    }
+
+    public double getTargetDeg() {
+        return targetDeg;
+    }
+
+    public double getErrorDeg() {
+        return errorDeg;
+    }
+
+    public double getPower() {
+        return power;
+    }
+
+    public boolean isLimited() {
+        return limited;
+    }
+
+    public void addTelemetry(Telemetry telemetry) {
+        telemetry.addData("Turret", "%s  %s CELL up  %s", mode, upCell, isOnTarget() ? "ON TARGET" : limited ? "AT LIMIT" : "");
+        telemetry.addData("Turret angle / target", "%.1f / %.1f (err %.1f)", angleDeg, targetDeg, errorDeg);
+        telemetry.addData("Turret trim / power", "%.1f / %.2f", trimDeg, power);
+        telemetry.addData("Distance to CELL", "%.1f in (lead %.1f in)", trueDistanceIn, distanceIn);
+    }
+}
