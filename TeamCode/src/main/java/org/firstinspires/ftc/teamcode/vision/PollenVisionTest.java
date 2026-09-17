@@ -30,7 +30,7 @@ public class PollenVisionTest extends OpMode {
     private Follower follower;
     private FusedPinpointLocalizer localizer;
     private PollenVision vision;
-    private Pollen[] pollens = Pollen.values();
+    private GamePiece[] pollens = GamePiece.values();
     private int pollenIndex = 0;
 
     @Override

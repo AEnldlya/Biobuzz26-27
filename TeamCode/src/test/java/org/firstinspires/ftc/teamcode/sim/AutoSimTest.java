@@ -4,7 +4,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import com.pedropathing.math.Pose;
-import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.hardware.Gamepad;
 
 import org.firstinspires.ftc.teamcode.Alliance;
@@ -12,40 +11,27 @@ import org.firstinspires.ftc.teamcode.AutoBase;
 import org.firstinspires.ftc.teamcode.BlueAuto;
 import org.firstinspires.ftc.teamcode.Field;
 import org.firstinspires.ftc.teamcode.RedAuto;
-import org.firstinspires.ftc.teamcode.vision.Pollen;
+import org.firstinspires.ftc.teamcode.vision.GamePiece;
 import org.junit.Test;
 
 import java.io.File;
 
 /**
- * Runs the real RED AUTO / BLUE AUTO OpModes against the simulated robot for a full 30 s
- * (real time, the code uses wall-clock timers) and checks the whole chain: Pedro drives the
- * placeholder paths, the turret stays on the CELL, the flywheel is at speed when the blocker
- * opens, the preload scores, the Limelight finds the biggest purple pile, the intake picks it
- * up, the robot comes back, shoots again, and parks.
+ * Runs the real RED AUTO / BLUE AUTO OpModes on the BIOBUZZ field for a full 30 s (real time,
+ * the code uses wall-clock timers) and scores it like the rules do: the robot starts on its
+ * wall with 4 POLLEN, the up CELL holds 3 NECTAR, 3 POLLEN tip the HIVE (20), the GARDEN has
+ * 4 POLLEN in the corner, LEAVE is 3, PARK in the LOADING ZONE is 5, and elements left in the
+ * up CELL are 2 each.
  *
  * The replay is written to TeamCode/build/sim/auto_red.html (open it in a browser).
  */
 public class AutoSimTest {
-    private static void placePollen(SimWorld world, Alliance alliance) {
-        // written for red and mirrored: a pile of four purple ahead of the scan pose, a lone
-        // purple off to the side, and a green pile that must be ignored
-        double[][] purple = {{20, 68}, {24, 70}, {28, 67}, {23, 73}, {8, 62}};
-        double[][] green = {{34, 62}, {37, 64}, {36, 60}};
-        for (double[] p : purple) {
-            Pose m = alliance.fromRed(new Pose(p[0], p[1]));
-            world.addPollen(Pollen.PURPLE, m.x(), m.y());
-        }
-        for (double[] p : green) {
-            Pose m = alliance.fromRed(new Pose(p[0], p[1]));
-            world.addPollen(Pollen.GREEN, m.x(), m.y());
-        }
-    }
-
     private static SimWorld run(AutoBase auto, Alliance alliance, String reportName) throws Exception {
-        SimWorld world = new SimWorld(alliance, 0.0);
-        placePollen(world, alliance);
-        world.ballsInRobot = AutoBase.PRELOAD_BALLS;
+        SimWorld world = new SimWorld(alliance, 0.0).stagePerRules();
+        // an opponent NECTAR lying near our GARDEN must be ignored (G408)
+        Pose decoy = alliance.fromRed(new Pose(16, 6));
+        world.addPiece(GamePiece.nectarOf(alliance == Alliance.RED ? Alliance.BLUE : Alliance.RED), decoy.x(), decoy.y());
+        world.ballsInRobot = Field.PRELOAD_POLLEN;
 
         auto.hardwareMap = world.hardwareMap;
         auto.telemetry = world.telemetry;
@@ -63,7 +49,7 @@ public class AutoSimTest {
         while (System.nanoTime() - startNs < 31_000_000_000L) {
             auto.loop();
             AutoBase.State state = auto.getState();
-            world.setLabel(state.name());
+            world.setLabel(state.name() + (world.tipping ? "  (HIVE tipping)" : "") + "  tips " + world.tips);
             if (state != lastState) {
                 System.out.printf("%6.2f s  %s  %s%n", (System.nanoTime() - startNs) / 1e9, state, world.telemetry.get("Auto"));
                 lastState = state;
@@ -76,35 +62,47 @@ public class AutoSimTest {
         auto.stop();
         File html = world.report.write(reportName);
         System.out.println("replay: " + html.getAbsolutePath());
-        System.out.printf("shots %d scored %d collected %d final pose %s%n", world.shotsFired(), world.ballsScored,
-                world.collectedCount(), world.robot.truePose());
+        System.out.printf("shots %d scored %d collected %d tips %d parked %s final pose %s%n", world.shotsFired(),
+                world.ballsScored, world.collectedCount(), world.tips, world.parked(), world.robot.truePose());
+        System.out.println("AUTO points: " + world.pointsBreakdown());
         for (SimWorld.Shot s : world.shots) {
-            System.out.printf("  shot %.2f s rpm %.0f turret %.1f aim %.1f miss %.1f in %s%n", s.timeS, s.rpm,
-                    s.turretDeg, s.trueAimDeg, s.missIn, s.scored ? "SCORED" : (s.dribbled ? "DRIBBLED" : "miss"));
+            System.out.printf("  shot %.2f s at %s CELL, %.0f in, rpm %.0f turret %.1f aim %.1f miss %.1f in %s%n", s.timeS, s.cell,
+                    s.distanceIn, s.rpm, s.turretDeg, s.trueAimDeg, s.missIn,
+                    s.scored ? "SCORED" : (s.dribbled ? "DRIBBLED" : (s.duringTip ? "during tip" : "miss")));
         }
         return world;
     }
 
     private static void check(SimWorld world, AutoBase auto, Alliance alliance) {
         assertEquals("auto should finish parked", AutoBase.State.DONE, auto.getState());
-        assertTrue("preload volley not fired: " + world.shotsFired(), world.shotsFired() >= AutoBase.PRELOAD_BALLS);
+        assertTrue("tip volley not fired: " + world.shotsFired(), world.shotsFired() >= AutoBase.TIP_VOLLEY_BALLS);
+        for (int i = 0; i < AutoBase.TIP_VOLLEY_BALLS; i++) {
+            assertTrue("preload shot " + i + " should score", world.shots.get(i).scored);
+        }
         for (SimWorld.Shot s : world.shots) {
             double err = Math.abs(s.turretDeg - s.trueAimDeg);
             assertTrue("turret off target at a shot: " + err + " deg", err <= 3.0);
         }
-        assertTrue("preload should score: " + world.ballsScored, world.ballsScored >= 2);
-        assertTrue("should collect pollen from the purple pile: " + world.collectedCount(), world.collectedCount() >= 2);
-        for (SimWorld.PollenPiece p : world.pollen) {
-            assertTrue("collected the wrong colour", !p.collected || p.color == Pollen.PURPLE);
+        assertEquals("the HIVE should have tipped once", 1, world.tips);
+        assertTrue("should collect POLLEN from the GARDEN: " + world.collectedCount(), world.collectedCount() >= 2);
+        for (SimWorld.Piece p : world.pieces) {
+            assertTrue("collected an opponent NECTAR", !p.collected || p.type.controllableBy(alliance));
         }
-        assertTrue("should shoot a second volley: " + world.shotsFired(), world.shotsFired() >= AutoBase.PRELOAD_BALLS + 1);
-        Pose park = alliance.fromRed(Field.RED_PARK);
-        Pose end = world.robot.truePose();
-        assertTrue("should end near the park pose: " + end, Math.hypot(end.x() - park.x(), end.y() - park.y()) <= 6.0);
+        boolean scoredAfterTip = false;
+        for (SimWorld.Shot s : world.shots) {
+            if (s.cell == Field.startingUpCell(alliance).flipped() && s.scored) {
+                scoredAfterTip = true;
+            }
+        }
+        assertTrue("should score into the new up CELL after the tip", scoredAfterTip);
+        assertTrue("should end PARKED in the LOADING ZONE: " + world.robot.truePose(), world.parked());
+        assertTrue("no ball should be wasted into a swinging HIVE: " + world.shotsFired() + " shots, "
+                + world.ballsScored + " in", world.ballsScored >= 6);
+        assertTrue("AUTO points too low: " + world.pointsBreakdown(), world.autoPoints() >= 3 + 20 + 5 + 2);
     }
 
     @Test
-    public void redAutoScoresCollectsAndParks() throws Exception {
+    public void redAutoTipsCollectsScoresAndParks() throws Exception {
         RedAuto auto = new RedAuto();
         SimWorld world = run(auto, Alliance.RED, "auto_red");
         check(world, auto, Alliance.RED);
@@ -115,10 +113,5 @@ public class AutoSimTest {
         BlueAuto auto = new BlueAuto();
         SimWorld world = run(auto, Alliance.BLUE, "auto_blue");
         check(world, auto, Alliance.BLUE);
-    }
-
-    /** keeps OpMode's protected members reachable for the harness */
-    static OpMode asOpMode(AutoBase auto) {
-        return auto;
     }
 }

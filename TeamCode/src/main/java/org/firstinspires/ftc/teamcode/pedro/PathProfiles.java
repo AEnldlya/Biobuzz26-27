@@ -1,6 +1,9 @@
 package org.firstinspires.ftc.teamcode.pedro;
 
+import com.pedropathing.api.Paths;
 import com.pedropathing.config.Modifier;
+import com.pedropathing.math.Pose;
+import com.pedropathing.paths.Path;
 
 /**
  * Per-path Foresight overrides ("custom path constraints" in Pedro 3.0).
@@ -13,7 +16,7 @@ import com.pedropathing.config.Modifier;
  * starts and reverted when it ends (PathTracker does that), so they never leak into the next
  * path.
  *
- *   follower.follow(line(a, b).linear(a.heading(), b.heading()).with(PathProfiles.score()));
+ *   follower.follow(PathProfiles.straight(from, to, PathProfiles.score()));
  *
  * All distances in inches, angles in radians, times in milliseconds, maxPathSpeed is a
  * fraction of the max achievable velocity.
@@ -45,6 +48,20 @@ public final class PathProfiles {
     public static double PARK_TIMEOUT_MS = 300;
 
     private PathProfiles() {
+    }
+
+    /**
+     * A straight path from one pose to another that really ENDS at the second pose's heading.
+     *
+     * Pedro 3.0.0's Path.linear(a, b) holds b at t = 0 and a at t = 1, i.e. its arguments read
+     * backwards from their names, so a plain linear(from.heading(), to.heading()) drives the
+     * robot to the heading it STARTED at. That is invisible on a turret robot until the camera
+     * or the intake has to point somewhere. Everything that builds a path goes through here so
+     * there is one place to change if a later Pedro release swaps them back; PathHeadingTest in
+     * the simulator pins the behaviour down and fails loudly if it does.
+     */
+    public static Path straight(Pose from, Pose to, Modifier... profile) {
+        return Paths.line(from, to).linear(to.heading(), from.heading()).with(profile);
     }
 
     public static Modifier[] score() {

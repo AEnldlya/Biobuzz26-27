@@ -13,34 +13,47 @@ import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.pedro.FusedPinpointLocalizer;
 import org.firstinspires.ftc.teamcode.pedro.PathProfiles;
-import org.firstinspires.ftc.teamcode.vision.Pollen;
+import org.firstinspires.ftc.teamcode.vision.GamePiece;
 import org.firstinspires.ftc.teamcode.vision.PollenVision;
 
 /**
- * The whole AUTO, shared by RedAuto and BlueAuto (they only pick the alliance).
+ * The whole BIOBUZZ AUTO, shared by RedAuto and BlueAuto (they only pick the alliance).
  *
- *   TO_SCORE  drive from the start to the scoring spot, turret already tracking the CELL
- *   SHOOT     fire the preload once the turret is on target and the flywheel is at speed
- *   TO_SCAN   drive to the pollen zone
- *   SCAN      hold still (optionally sweeping the heading) while the Limelight maps pollen
- *   APPROACH  drive to just short of the biggest pile of TARGET_POLLEN, intake facing it
- *   COLLECT   intake on, push through the pile
- *   RETURN    back to the scoring spot, then SHOOT again; repeat up to MAX_CYCLES
- *   PARK      when done or when the clock runs low
+ * The plan follows the rules (Field): the robot starts on its alliance wall with 4 POLLEN, the
+ * up CELL already holds 3 NECTAR, and 3 more POLLEN tip the HIVE (20 points).
  *
- * Every waypoint is written for RED in Field and mirrored for BLUE. The turret and shooter
- * update every loop no matter the state, so the turret is always tracking the goal and the
- * flywheel is always at the right speed for the current distance.
+ *   TO_SCORE  drive to the shooting spot for the up CELL, turret already tracking it
+ *   SHOOT     fire TIP_VOLLEY_BALLS (3) once the turret is on target and the flywheel at
+ *             speed. The HIVE tips: the other CELL is now up and faces the other half of the
+ *             field, so the turret is told to flip (flipUpCell) and the score pose changes.
+ *   TO_SCAN   drive to the GARDEN corner (4 POLLEN in a line along the wall)
+ *   SCAN      hold still (optionally sweeping the heading) while the Limelight maps POLLEN
+ *   APPROACH  drive to just short of the biggest pile, intake facing it
+ *   COLLECT   intake on, push through the pile (possession limit 4)
+ *   RETURN    to the rear-side shooting spot, SHOOT everything into the new up CELL
+ *             (2 points each if they stay in, and progress toward the next TIP)
+ *   PARK      in the LOADING ZONE (5 points), also when the clock runs low
+ *
+ * LEAVE (3 points) happens by driving off the wall. Every waypoint is written for RED in
+ * Field and mirrored for BLUE. The turret and shooter update every loop no matter the state.
  */
 public abstract class AutoBase extends OpMode {
-    public static int PRELOAD_BALLS = 3;
-    public static int CYCLE_BALLS = 3;
-    public static int MAX_CYCLES = 2;
-    public static Pollen TARGET_POLLEN = Pollen.PURPLE;
+    public static int PRELOAD_BALLS = Field.PRELOAD_POLLEN;
+    /** POLLEN to launch at the starting up CELL: with 3 NECTAR staged in it, 3 tip the HIVE */
+    public static int TIP_VOLLEY_BALLS = 3;
+    /** feeds attempted after a pickup (everything on board, up to the possession limit) */
+    public static int CYCLE_BALLS = Field.POSSESSION_LIMIT;
+    public static int MAX_CYCLES = 1;
+    public static GamePiece TARGET_POLLEN = GamePiece.POLLEN;
 
-    /** seconds the blocker is open per ball, then closed between balls for flywheel recovery */
-    public static double SHOT_FEED_S = 0.35;
-    public static double BETWEEN_SHOTS_S = 0.25;
+    /**
+     * Seconds the blocker is open per ball, then closed between balls for flywheel recovery.
+     * The transfer feeds continuously while the blocker is open, so this window must be SHORT
+     * enough that exactly one ball passes: with only 4 POLLEN of possession a wasted ball can
+     * cost a TIP. Tune it on the robot (too brief and the servo never clears the ball).
+     */
+    public static double SHOT_FEED_S = 0.25;
+    public static double BETWEEN_SHOTS_S = 0.30;
     /** fire anyway after waiting this long for turret / flywheel ready (don't waste the auto) */
     public static double AIM_TIMEOUT_S = 2.5;
 
@@ -59,7 +72,17 @@ public abstract class AutoBase extends OpMode {
     /** start parking when this much time is left */
     public static double PARK_RESERVE_S = 4.0;
     /** don't start a new cycle unless this much time is left */
-    public static double CYCLE_NEEDS_S = 11.0;
+    public static double CYCLE_NEEDS_S = 12.0;
+
+    /**
+     * Pedro reports a path finished at its parametric end, which can be well before the
+     * HEADING has settled (the translation converges within hundredths of an inch first). For
+     * the shooting spots that does not matter, because the turret aims itself; for the scan
+     * pose and the pickup approach it does, because the camera and the intake point where the
+     * robot points. Those paths wait for the heading, up to PATH_SETTLE_TIMEOUT_S.
+     */
+    public static double PATH_HEADING_TOLERANCE_DEG = 6.0;
+    public static double PATH_SETTLE_TIMEOUT_S = 1.2;
 
     public enum State {
         TO_SCORE, SHOOT, TO_SCAN, SCAN, APPROACH, COLLECT, RETURN, PARK, DONE
@@ -88,14 +111,17 @@ public abstract class AutoBase extends OpMode {
     private int shotsLeft = 0;
     private int shotsFired = 0;
     private int cycles = 0;
+    private int tipsAssumed = 0;
     private boolean sweptRight = false;
     private PollenVision.Cluster targetCluster = null;
     private Pose approachPose = null;
+    private Pose pathTarget = null;
+    private boolean pathNeedsHeading = false;
+    private long pathEndedNs = 0;
     private boolean fallbackPickup = false;
     private String note = "";
 
     private Pose startPose;
-    private Pose scorePose;
     private Pose scanPose;
     private Pose fallbackPickupPose;
     private Pose parkPose;
@@ -106,10 +132,9 @@ public abstract class AutoBase extends OpMode {
     public void init() {
         Alliance alliance = alliance();
         startPose = Field.startPose(alliance);
-        scorePose = alliance.fromRed(Field.RED_SCORE);
-        scanPose = alliance.fromRed(Field.RED_SCAN);
-        fallbackPickupPose = alliance.fromRed(Field.RED_PICKUP_FALLBACK);
-        parkPose = alliance.fromRed(Field.RED_PARK);
+        scanPose = Field.scanPose(alliance);
+        fallbackPickupPose = Field.fallbackPickupPose(alliance);
+        parkPose = Field.parkPose(alliance);
 
         hubs = new Hubs(hardwareMap);
         Battery battery = new Battery(hardwareMap);
@@ -195,16 +220,23 @@ public abstract class AutoBase extends OpMode {
         switch (state) {
             case TO_SCORE:
                 if (enter) {
-                    followTo(scorePose, PathProfiles.score());
+                    followTo(scorePose(), PathProfiles.score());
                 }
                 if (pathDone()) {
-                    startVolley(PRELOAD_BALLS);
+                    startVolley(Math.min(TIP_VOLLEY_BALLS, PRELOAD_BALLS));
                     setState(State.SHOOT);
                 }
                 break;
 
             case SHOOT:
                 if (runVolley(pose)) {
+                    if (tipsAssumed == 0 && shotsFired >= TIP_VOLLEY_BALLS) {
+                        // 3 NECTAR were staged in that CELL; with our 3 POLLEN it tips. The
+                        // other CELL is up now and faces the other half of the field.
+                        tipsAssumed++;
+                        turret.flipUpCell();
+                        note = "HIVE tipped: " + turret.getUpCell() + " CELL up";
+                    }
                     boolean canCycle = cycles < MAX_CYCLES && left >= CYCLE_NEEDS_S;
                     if (canCycle) {
                         setState(State.TO_SCAN);
@@ -216,7 +248,8 @@ public abstract class AutoBase extends OpMode {
 
             case TO_SCAN:
                 if (enter) {
-                    followTo(scanPose, PathProfiles.transit());
+                    // the camera has to be looking at the GARDEN when SCAN starts
+                    followTo(scanPose, PathProfiles.transit(), true);
                 }
                 if (pathDone()) {
                     setState(State.SCAN);
@@ -236,9 +269,10 @@ public abstract class AutoBase extends OpMode {
                     if (fallbackPickup) {
                         // no camera target: sit on the fallback spot and intake
                         follower.hold(fallbackPickupPose);
+                        pathTarget = null;
                     } else {
                         Pose through = PollenVision.throughPose(approachPose, targetCluster, PUSH_THROUGH_IN, INTAKE_HEADING_OFFSET);
-                        follower.follow(line(pose, through).constant(approachPose.heading()).with(PathProfiles.pickup()));
+                        launch(line(pose, through).constant(approachPose.heading()).with(PathProfiles.pickup()), through, false);
                     }
                     collectPathDoneNs = 0;
                     setState(State.COLLECT);
@@ -290,8 +324,13 @@ public abstract class AutoBase extends OpMode {
 
     private void finishCollect() {
         vision.clear(); // that pile is (hopefully) gone
-        followTo(scorePose, PathProfiles.score());
+        followTo(scorePose(), PathProfiles.score());
         setState(State.RETURN);
+    }
+
+    /** shooting spot for whichever CELL is up right now */
+    private Pose scorePose() {
+        return Field.scorePose(alliance(), turret.getUpCell());
     }
 
     /** Hold the scan pose, turned left for the first half of the scan and right for the second. */
@@ -313,12 +352,13 @@ public abstract class AutoBase extends OpMode {
             fallbackPickup = false;
             approachPose = PollenVision.approachPose(pose, targetCluster, STANDOFF_IN, INTAKE_HEADING_OFFSET);
             note = String.format("pollen at %.0f, %.0f (w %.2f)", targetCluster.x, targetCluster.y, targetCluster.weight);
-            followTo(approachPose, PathProfiles.transit());
+            // the intake has to be facing the pile before the push-through starts
+            followTo(approachPose, PathProfiles.transit(), true);
         } else {
             fallbackPickup = true;
             approachPose = fallbackPickupPose;
             note = "no pollen seen: fallback pickup";
-            followTo(fallbackPickupPose, PathProfiles.pickup());
+            followTo(fallbackPickupPose, PathProfiles.pickup(), true);
         }
         setState(State.APPROACH);
     }
@@ -388,14 +428,44 @@ public abstract class AutoBase extends OpMode {
 
     /** Straight line from wherever the robot is to target, heading blending to target's. */
     protected void followTo(Pose target, Modifier[] profile) {
-        Pose from = follower.pose();
-        Path path = line(from, target).linear(from.heading(), target.heading()).with(profile);
-        follower.follow(path);
+        followTo(target, profile, false);
     }
 
-    /** true once the follower has finished its path (Pedro then holds the end pose). */
+    /**
+     * Straight line from wherever the robot is to target, heading blending to target's. With
+     * requireHeading, pathDone() also waits for the heading to settle (see
+     * PATH_HEADING_TOLERANCE_DEG).
+     */
+    protected void followTo(Pose target, Modifier[] profile, boolean requireHeading) {
+        launch(PathProfiles.straight(follower.pose(), target, profile), target, requireHeading);
+    }
+
+    private void launch(Path path, Pose target, boolean requireHeading) {
+        follower.follow(path);
+        pathTarget = target;
+        pathNeedsHeading = requireHeading;
+        pathEndedNs = 0;
+    }
+
+    /**
+     * true once the follower has finished its path (Pedro then holds the end pose), and for
+     * paths launched with requireHeading, once the heading has settled or the settle timeout
+     * has run out.
+     */
     protected boolean pathDone() {
-        return !follower.following();
+        if (follower.following()) {
+            pathEndedNs = 0;
+            return false;
+        }
+        if (!pathNeedsHeading || pathTarget == null) {
+            return true;
+        }
+        if (pathEndedNs == 0) {
+            pathEndedNs = System.nanoTime();
+        }
+        double error = Math.abs(Math.toDegrees(Angle.normalizeSigned(follower.pose().heading() - pathTarget.heading())));
+        return error <= PATH_HEADING_TOLERANCE_DEG
+                || (System.nanoTime() - pathEndedNs) / 1e9 >= PATH_SETTLE_TIMEOUT_S;
     }
 
     protected void setState(State next) {

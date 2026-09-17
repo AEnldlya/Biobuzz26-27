@@ -2,7 +2,6 @@ package org.firstinspires.ftc.teamcode.sim;
 
 import com.pedropathing.math.Pose;
 
-import org.firstinspires.ftc.teamcode.vision.Pollen;
 import org.firstinspires.ftc.teamcode.vision.PollenCamera;
 import org.firstinspires.ftc.teamcode.vision.PollenVision;
 
@@ -95,8 +94,8 @@ public class SimCamera implements PollenCamera {
         Pose robot = world.robot.truePose();
         List<Blob> blobs = new ArrayList<>();
         if (reportedPipeline == pipeline) {
-            for (SimWorld.PollenPiece piece : world.pollen) {
-                if (piece.collected || piece.color.pipeline != reportedPipeline) {
+            for (SimWorld.Piece piece : world.pieces) {
+                if (piece.collected || piece.type.pipeline != reportedPipeline) {
                     continue;
                 }
                 Blob blob = see(robot, piece.x, piece.y);

@@ -16,7 +16,7 @@ import java.util.function.Function;
  * Limelight colour-blob pollen finder for AUTO: "go to where there is the most of a certain
  * pollen".
  *
- * The Limelight runs a colour pipeline per pollen colour (see Pollen) and reports every blob it
+ * The Limelight runs a colour pipeline per piece (see GamePiece) and reports every blob it
  * sees as a ColorResult with a horizontal / vertical angle and an image area. Each loop this
  * class:
  * <ol>
@@ -47,15 +47,15 @@ public class PollenVision {
     public static double CAMERA_HEIGHT_IN = 11.0;   // lens centre above the tiles
     public static double CAMERA_PITCH_DEG = 22.0;   // tilt DOWN from horizontal (+ = down)
     public static double CAMERA_YAW_DEG = 0.0;      // + = camera turned to the left of forward
-    /** height of the point on a pollen piece the blob centre corresponds to (~its centre) */
-    public static double POLLEN_HEIGHT_IN = 2.5;
+    /** height of the point on a piece the blob centre corresponds to (~its centre: 2.8 in POLLEN) */
+    public static double POLLEN_HEIGHT_IN = Field.POLLEN_DIAMETER_IN / 2.0;
 
     // ---- blob filtering ----
     public static double MIN_BLOB_AREA = 0.03;      // % of image; drops specks
     public static double MAX_RANGE_IN = 84.0;       // beyond this the floor projection is junk
     public static double MIN_RANGE_IN = 4.0;
     public static long MAX_STALENESS_MS = 250;      // ignore frames older than this
-    public static double FIELD_MARGIN_IN = 4.0;     // clusters must be this far inside the walls
+    public static double FIELD_MARGIN_IN = 1.0;     // clusters must be this far inside the walls (pieces sit against them)
 
     // ---- clustering / memory ----
     public static double CLUSTER_RADIUS_IN = 10.0;
@@ -84,7 +84,7 @@ public class PollenVision {
     private final PoseHistory poseHistory;
     private final List<Cluster> clusters = new ArrayList<>();
 
-    private Pollen target = Pollen.PURPLE;
+    private GamePiece target = GamePiece.POLLEN;
     private boolean running = false;
     private double lastFrameTimestamp = -1.0;
     private long lastFrameNs = 0;
@@ -126,8 +126,8 @@ public class PollenVision {
         running = false;
     }
 
-    /** Which pollen colour to look for; switching pipelines clears the map. */
-    public void setTarget(Pollen pollen) {
+    /** Which piece to look for; switching pipelines clears the map. */
+    public void setTarget(GamePiece pollen) {
         if (pollen == target) {
             return;
         }
@@ -139,7 +139,7 @@ public class PollenVision {
         }
     }
 
-    public Pollen getTarget() {
+    public GamePiece getTarget() {
         return target;
     }
 
@@ -336,18 +336,18 @@ public class PollenVision {
         double dist = Math.hypot(dx, dy);
         double bearing = dist < 1e-6 ? robot.heading() : Math.atan2(dy, dx);
         double back = Math.min(standoffIn, Math.max(dist - 1.0, 0.0));
-        double x = cluster.x - back * Math.cos(bearing);
-        double y = cluster.y - back * Math.sin(bearing);
+        double x = Field.clampRobotX(cluster.x - back * Math.cos(bearing));
+        double y = Field.clampRobotY(cluster.y - back * Math.sin(bearing));
         return new Pose(x, y, Angle.normalize(bearing + intakeHeadingOffset));
     }
 
     /** A point pushThroughIn past the cluster along the approach direction (drive through it). */
     public static Pose throughPose(Pose approach, Cluster cluster, double pushThroughIn, double intakeHeadingOffset) {
         double bearing = Angle.normalize(approach.heading() - intakeHeadingOffset);
-        double x = cluster.x + pushThroughIn * Math.cos(bearing);
-        double y = cluster.y + pushThroughIn * Math.sin(bearing);
-        x = Math.max(FIELD_MARGIN_IN, Math.min(Field.SIZE - FIELD_MARGIN_IN, x));
-        y = Math.max(FIELD_MARGIN_IN, Math.min(Field.SIZE - FIELD_MARGIN_IN, y));
+        // the robot centre stops at the wall; the intake mouth (half a robot ahead) reaches
+        // the pieces sitting against it
+        double x = Field.clampRobotX(cluster.x + pushThroughIn * Math.cos(bearing));
+        double y = Field.clampRobotY(cluster.y + pushThroughIn * Math.sin(bearing));
         return new Pose(x, y, approach.heading());
     }
 

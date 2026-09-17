@@ -15,7 +15,9 @@ package org.firstinspires.ftc.teamcode;
  * follow. Or set USE_REGRESSION = false and hand-edit RPM[] the old way.
  */
 public final class ShotTable {
-    public static double[] DISTANCE_IN = {24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 96, 102, 108, 114, 120, 126, 132, 138, 144};
+    // the up CELL's mouth is 53.4 in from its wall and 59 in from the alliance wall, so the
+    // furthest legal shot (from the far corner of that half) is about 80 in
+    public static double[] DISTANCE_IN = {18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90};
     public static double[] RPM = new double[DISTANCE_IN.length];
     public static double[] HOOD = new double[DISTANCE_IN.length];
     public static double[] TIME_OF_FLIGHT_S = new double[DISTANCE_IN.length];

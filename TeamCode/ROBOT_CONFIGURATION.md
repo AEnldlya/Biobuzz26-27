@@ -6,10 +6,10 @@ Hardware names the BIOBUZZ OpModes expect, and how the main subsystems fit toget
 
 | Name | Group | What it is |
 | --- | --- | --- |
-| `RED AUTO` / `BLUE AUTO` | Biobuzz | Full autonomous (`AutoBase`): preload shot, Limelight pollen seek + intake, return + shoot, park |
+| `RED AUTO` / `BLUE AUTO` | Biobuzz | Full autonomous (`AutoBase`): 3 POLLEN tip the HIVE, find and intake the GARDEN POLLEN with the Limelight, re-score into the new up CELL, PARK |
 | `Biobuzz TeleOp` | Biobuzz | Match TeleOp; picks up the pose / turret angle / HIVE state saved by AUTO |
 | `Shot Tuner` | Tuning | Builds `ShotTable` and tunes turret / shooter gains live |
-| `Pollen Vision Test` | Tuning | Checks the Limelight floor projection against a real pollen piece |
+| `Pollen Vision Test` | Tuning | Checks the Limelight floor projection against a real POLLEN / NECTAR piece |
 | AutoTune (browser) | Tuning | Pedro AutoTune procedures in `pedro/Tuning.java`, at http://192.168.43.1:10158 |
 
 ## Hardware names
@@ -44,7 +44,21 @@ Hardware names the BIOBUZZ OpModes expect, and how the main subsystems fit toget
 - `CompensatedDrivetrain` is the stock mecanum drivetrain with battery voltage compensation
   (`Battery.NOMINAL_VOLTAGE` / measured, capped at 0.85 to 1.2).
 - `PathProfiles` are per-path Foresight overrides: score (stop precisely), transit (fast),
-  pickup (60 % speed, no brake at end), park.
+  pickup (60 % speed, no brake at end), park. It also owns `straight(from, to, profile)`, which the
+  auto builds every straight path with.
+
+**Pedro 3.0.0 heading quirk.** `Path.linear(a, b)` holds `b` at the start of the path and `a`
+at the end: the arguments read backwards from their names. Written the obvious way, every path
+drives the robot back to the heading it started at, which is invisible on a turret robot until
+the camera or the intake has to point somewhere. `PathProfiles.straight()` passes them in the
+order the library actually wants, and `PathHeadingTest` in the simulator fails loudly if a
+later Pedro release swaps them back.
+
+**Path end vs heading.** Pedro reports a path finished at its parametric end, which can be well
+before the heading has settled (translation converges to hundredths of an inch first). The
+shooting spots do not care, because the turret aims itself; the scan pose and the pickup
+approach do, so `AutoBase.followTo(..., true)` also waits for the heading
+(`PATH_HEADING_TOLERANCE_DEG`, `PATH_SETTLE_TIMEOUT_S`).
 
 Set `FusedPinpointLocalizer.LOGO_FACING` / `USB_FACING` to how the Control Hub is mounted; they
 only matter for the fallback heading.
@@ -112,32 +126,56 @@ The shot table is not hand-typed: it is generated from physics when the code loa
   at the design compression of **4 mm** that is 74 % of ideal, so exit speed = 0.37 × surface
   speed. `EFFICIENCY_TRIM` (measured / predicted) is the one number to fit on the robot from a
   chronograph or one calibrated distance.
-- **Flight.** Point mass with gravity and quadratic air drag (5 in, 75 g ball, Cd 0.47),
-  integrated in 2 ms steps from `LAUNCH_HEIGHT_IN`.
+- **Flight.** Point mass with gravity and quadratic air drag (POLLEN: 2.8 in, 24.9 g, Cd 0.47),
+  integrated in 2 ms steps from `LAUNCH_HEIGHT_IN`. Gamepad 2 B in TeleOp switches the table
+  to NECTAR (3.62 in, 41.3 g) and back.
 - **Hood.** The opening is tipped toward the shooter, so the ball must arrive descending. The
   exit angle follows the lob geometry `tan(exit) = 2h/d + tan(ENTRY_ANGLE_DEG)` (h = opening
   height above the launch, d = distance): near-vertical up close, flatter far away, clamped to
   the hood's range. Servo position comes from a two-point calibration
   (`HOOD_SERVO_AT_MIN_ANGLE` / `HOOD_SERVO_AT_MAX_ANGLE` at `HOOD_MIN_ANGLE_DEG` /
   `HOOD_MAX_ANGLE_DEG`).
-- **Table.** For every distance from 24 to 144 in (6 in steps) the solver finds the exit speed
-  that drops the ball *down* through the CELL opening (59.5 in) and converts it to RPM, plus
-  time of flight for the turret's shoot-on-the-move lead.
+- **Table.** For every distance from 18 to 90 in (6 in steps; the mouth is at most ~80 in from
+  any legal spot in its half) the solver finds the exit speed that drops the ball *down* through
+  the mouth centre (59.55 in) and converts it to RPM, plus time of flight for the turret's
+  shoot-on-the-move lead.
 - **Regression.** The RPM samples are fit with a cubic, `rpm = c0 + c1 d + c2 d² + c3 d³`,
   which `ShotTable.rpm()` uses (`USE_REGRESSION`). `ShotTable.describe()` prints the table,
   the coefficients and the fit error; the simulator's `ShootingPhysicsTest` does too.
-- **CELL opening.** `Field.CELL_TILT_DEG` (30°) and `CELL_OPENING_RADIUS_IN` (placeholder 7 in,
-  the radius the ball centre can pass) define the target the simulator scores against.
+- **CELL mouth.** The up CELL's mouth is a 20 × 14 in rectangle 21.46 in along the 30° arm
+  from the pivot (centre 59.55 in up, 18.6 in from the pivot line), facing 30° above horizontal
+  toward the shooter (`Field.cellMouth`). The simulator scores a ball only if it crosses that
+  plane going in, inside the rectangle by its radius.
 
 To tune on the robot: measure the ball, wheel, launch height and hood calibration into
 `Ballistics`, then shoot from one known distance and adjust `EFFICIENCY_TRIM` until it drops
 in; `ShotTable.regenerate()` (or a restart) rebuilds everything.
 
+## BIOBUZZ game facts the code relies on (Competition Manual V1 / TU01, Field Setup Guide V1.0)
+
+| Item | Value | Where in the code |
+| --- | --- | --- |
+| POLLEN | yellow, 2.8 in, 24.9 g, 40 per match, either alliance | `Field.POLLEN_*`, `GamePiece.POLLEN` |
+| NECTAR | red / blue, 3.62 in, 41.3 g, 8 per alliance, own alliance only (G408) | `Field.NECTAR_*`, `GamePiece.*_NECTAR` |
+| Setup | 4 POLLEN preloaded per robot, 4 per GARDEN, 4 per FLOWER; 3 NECTAR in each up CELL | `Field.PRELOAD_POLLEN`, `RED_GARDEN_POLLEN`, `NECTAR_STAGED_IN_UP_CELL` |
+| HIVE | pivots 43.95 in up, 25.5 in apart, arm 30°, CELL mouth 20 × 14 × 12 in, lip 53.5 / top 65.6 | `Field.HIVE_*`, `CELL_*`, `cellMouth()` |
+| HIVE TIP | 8 POLLEN or 3 POLLEN + 3 NECTAR (so 3 POLLEN tip the starting CELL); 20 points; other CELL comes up | `Field.TIP_POLLEN_EQUIVALENTS`, `AutoBase.TIP_VOLLEY_BALLS` |
+| Start | touching the alliance wall, inside an 18 in cube; red up CELL faces the audience, blue faces the rear | `Field.RED_START`, `startingUpCell()` |
+| LOADING ZONE | 23 × 11 in against the alliance wall, rear half; PARK = 5 | `Field.RED_LOADING_ZONE`, `RED_PARK` |
+| GARDEN | 23 × 2 in tape from the alliance corner along the audience (red) / rear (blue) wall; 1 point per element left | `Field.RED_GARDEN` |
+| Points | LEAVE 3, PARK 5 (AUTO and TELEOP), TIP 20, element left in up CELL 2, GARDEN 1 | `SimWorld.autoPoints()` |
+| Limits | possession 4 (G407), only LAUNCH into the up CELL (G417) | `Field.POSSESSION_LIMIT`, `AutoBase` |
+
+Coordinates: the manual's frame has its origin at field centre, +Y from the red wall toward
+the blue wall, +X toward the audience; Pedro here uses inches from the red/audience corner
+(`Field.fromOfficial`). Robot size in the code is your 12 × 12 in footprint
+(`Field.ROBOT_SIZE_IN`).
+
 ## Limelight pollen seeking (AUTO)
 
-- Build one **Color** pipeline per pollen colour on the Limelight web UI and put its index in
-  `vision/Pollen.java` (defaults: PURPLE 1, GREEN 2, YELLOW 3; rename to the real colours).
-  Raise "max targets" so every blob is reported.
+- Build one **Color** pipeline per piece on the Limelight web UI and put its index in
+  `vision/GamePiece.java` (defaults: POLLEN yellow 1, RED_NECTAR 2, BLUE_NECTAR 3). Raise
+  "max targets" so every blob is reported.
 - `PollenVision` projects each blob to the floor from the camera mount
   (`CAMERA_FORWARD_IN`, `CAMERA_LEFT_IN`, `CAMERA_HEIGHT_IN`, `CAMERA_PITCH_DEG`,
   `CAMERA_YAW_DEG`, `POLLEN_HEIGHT_IN`), places it on the field with the capture-time pose,
@@ -149,12 +187,19 @@ in; `ShotTable.regenerate()` (or a restart) rebuilds everything.
   pushes `PUSH_THROUGH_IN` past it. No cluster → `Field.RED_PICKUP_FALLBACK`.
 - Verify the geometry with `Pollen Vision Test` before a match.
 
-## AUTO waypoints
+## AUTO plan and waypoints
 
-All in `Field.java`, written for RED and mirrored for BLUE by `Alliance.fromRed()` (the field is
-point-symmetric). `RED_START`, `RED_SCORE`, `RED_SCAN`, `RED_PICKUP_FALLBACK` and `RED_PARK`
-are **placeholders** until the field is measured. Shooting spots must be on the opening side of
-the up-CELL; the auto refuses to fire from the wrong side (G417).
+`AutoBase`: start on the alliance wall with 4 POLLEN → drive to `RED_SCORE_AUDIENCE` (32 in
+from the up CELL's mouth) → fire 3 POLLEN → the HIVE tips (the auto assumes it and flips the
+turret to the FAR CELL) → drive to the GARDEN corner (`RED_SCAN`), find the 4 POLLEN with the
+Limelight, intake them → drive around to `RED_SCORE_REAR` (the new up CELL faces the rear)
+and fire everything → PARK in the LOADING ZONE (`RED_PARK`). Expected AUTO: LEAVE 3 + TIP 20
++ PARK 5 + 2 per POLLEN left in the rear CELL.
+
+Waypoints are in `Field.java`, written for RED and mirrored for BLUE by `Alliance.fromRed()`.
+They are placed from the published geometry but not yet driven on a real field: expect to
+nudge them. Shooting spots must be on the opening side of the up CELL; the auto refuses to
+fire from the wrong side (G417).
 
 ## Tuning order
 
@@ -180,10 +225,11 @@ matching CSVs.
 
 | Test | What it proves |
 | --- | --- |
-| `AutoSimTest` | `RED AUTO` and `BLUE AUTO` end to end: preload volley scores, camera picks the biggest purple pile and ignores green, intake collects it, second volley, park |
+| `AutoSimTest` | `RED AUTO` and `BLUE AUTO` end to end on the rules-staged field: 3 POLLEN tip the HIVE, the camera finds the GARDEN line (ignoring an opponent NECTAR), the intake collects it, the second volley goes into the new up CELL from the rear, PARK in the LOADING ZONE; AUTO points are totted up like the rules |
 | `TurretTrackingSimTest` | turret stays on the CELL while the robot spins and drives; a glitching position wire is flagged and ignored |
-| `PollenVisionSimTest` | the pollen finder places a pile within an inch or two of where it is |
-| `ShootingPhysicsTest` | the generated table and its regression drop balls into the CELL from 24 to 132 in; 20 % slow or 25 % fast misses |
+| `PollenVisionSimTest` | the pollen finder places the GARDEN line within an inch or two of where it is and ignores NECTAR |
+| `PathHeadingTest` | pins down Pedro's reversed `linear(a, b)` arguments and proves `PathProfiles.straight()` ends at the target heading |
+| `ShootingPhysicsTest` | the generated table and its regression drop POLLEN through the CELL mouth from 18 to 78 in; 20 % slow or 25 % fast misses; NECTAR gets its own table |
 
 Models: `SimRobot` (mecanum velocity lag, brake, odometry noise), `SimTurret` (two CR servos
 with dead zone and lag, two analog wires with noise and wrap), `SimShooter` (flywheel lag,

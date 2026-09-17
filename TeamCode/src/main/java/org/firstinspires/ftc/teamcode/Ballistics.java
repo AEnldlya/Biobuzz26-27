@@ -26,9 +26,10 @@ package org.firstinspires.ftc.teamcode;
  * to measure: ball mass and diameter, wheel diameter, compression, launch height, hood range.
  */
 public final class Ballistics {
-    // ---- the ball ----
-    public static double BALL_DIAMETER_IN = 5.0;
-    public static double BALL_MASS_KG = 0.075;
+    // ---- the ball: POLLEN by default (2.8 in, 24.9 g); setBall() switches to NECTAR ----
+    public static double BALL_DIAMETER_IN = Field.POLLEN_DIAMETER_IN;
+    public static double BALL_MASS_KG = Field.POLLEN_MASS_KG;
+    private static boolean nectar = false;
     public static double DRAG_COEFFICIENT = 0.47;     // sphere
     public static double AIR_DENSITY_KG_M3 = 1.2;
     public static final double GRAVITY_IN_S2 = 386.09;
@@ -57,6 +58,21 @@ public final class Ballistics {
     public static double FLIGHT_DT_S = 0.002;
 
     private Ballistics() {
+    }
+
+    /** POLLEN or NECTAR in the shooter: the table regenerates for the other ball. */
+    public static void setNectar(boolean shootNectar) {
+        if (shootNectar == nectar) {
+            return;
+        }
+        nectar = shootNectar;
+        BALL_DIAMETER_IN = nectar ? Field.NECTAR_DIAMETER_IN : Field.POLLEN_DIAMETER_IN;
+        BALL_MASS_KG = nectar ? Field.NECTAR_MASS_KG : Field.POLLEN_MASS_KG;
+        ShotTable.regenerate();
+    }
+
+    public static boolean isNectar() {
+        return nectar;
     }
 
     // ------------------------------------------------------------------ flywheel
