@@ -21,14 +21,21 @@ import org.firstinspires.ftc.robotcore.external.Telemetry;
  * Turret angles are degrees from robot forward, positive = RIGHT (clockwise), same as the old
  * turret code and the trim buttons.
  *
- * Hardware: a servo in continuous-rotation ("infinite turn") mode, so setPower() sets its
- * SPEED, plus the servo's position wire on an analog input. The analog voltage is the servo
- * output shaft angle, 0 to ANALOG_MAX_VOLTAGE per servo revolution, so it wraps every turn of
- * the servo; the code unwraps it (counts turns) and divides by GEAR_RATIO to get the turret
- * angle. With a 1:1 servo the reading is absolute: set FORWARD_RAW_DEG to the raw angle read
- * when the turret faces forward and it can start anywhere. Otherwise the turret must face
- * forward when the OpMode inits unless an angle is handed over from AUTO with
- * setAngleReference().
+ * Hardware: two servos in continuous-rotation ("infinite turn") mode driving one ring, so
+ * setPower() sets their SPEED, plus both servos' position wires on analog inputs. Each analog
+ * voltage is that servo's output shaft angle, 0 to ANALOG_MAX_VOLTAGE per servo revolution, so
+ * it wraps every turn; the code unwraps each wire (counts turns), divides by GEAR_RATIO to get
+ * the turret angle, and fuses the two: their average while they agree, and the one nearer the
+ * predicted angle (with a telemetry flag) if a wire glitches. With 1:1 servos the reading is
+ * absolute: set FORWARD_RAW_DEG / FORWARD_RAW2_DEG to the raw angles read when the turret
+ * faces forward and it can start anywhere. Otherwise the turret must face forward when the
+ * OpMode inits unless an angle is handed over from AUTO with setAngleReference().
+ *
+ * Control is a cascade. The position loop turns angle error (plus the rate the aim point is
+ * moving) into a target turret SPEED; the velocity PID then holds that speed against the
+ * measured speed from the position wires, with kV / kS feedforward so the PID only corrects
+ * the servos' nonlinearity and dead zone. That is what makes the servos track smoothly
+ * instead of bang-banging on position.
  */
 public class Turret {
     // ---- hardware ----
@@ -38,13 +45,19 @@ public class Turret {
     /** +1 if the second servo turns the turret the same way as the first for the same power,
      *  -1 if it is mounted mirrored (opposite sides of the ring, facing each other) */
     public static double SERVO2_DIRECTION = 1.0;
-    public static String FEEDBACK_NAME = "turretEncoder"; // analog input on one servo's position wire
+    // both servos' position wires on analog inputs
+    public static String FEEDBACK_NAME = "turretEncoder";
+    public static String FEEDBACK2_NAME = "turretEncoder2";
     public static double ANALOG_MAX_VOLTAGE = 3.3;       // voltage at a full servo revolution
     public static double GEAR_RATIO = 1.0;               // servo revs per turret rev
-    /** raw feedback angle (deg, before direction) with the turret facing forward; NaN = the
+    /** raw feedback angles (deg, before direction) with the turret facing forward; NaN = the
      *  turret faces forward at init (required when GEAR_RATIO != 1) */
     public static double FORWARD_RAW_DEG = Double.NaN;
-    public static double ENCODER_DIRECTION = 1.0;        // makes a right turn read positive
+    public static double FORWARD_RAW2_DEG = Double.NaN;
+    public static double ENCODER_DIRECTION = 1.0;        // makes a right turn read positive on wire 1
+    public static double ENCODER2_DIRECTION = 1.0;       // same for wire 2 (-1 if that servo is mirrored)
+    /** the two wires normally agree within this; beyond it one has glitched and is ignored */
+    public static double WIRE_AGREE_DEG = 6.0;
     public static double POWER_DIRECTION = 1.0;          // positive power turns the turret right
     public static double MIN_ANGLE_DEG = -180.0;         // cable limits relative to forward
     public static double MAX_ANGLE_DEG = 180.0;
@@ -54,17 +67,23 @@ public class Turret {
     public static double PIVOT_FORWARD_IN = 0.0;
     public static double PIVOT_LEFT_IN = 0.0;
 
-    // ---- PIDF, in power and degrees ----
-    public static double kP = 0.007;
-    public static double kI = 0.0005;
-    public static double kD = 0.0004;
+    // ---- position loop: angle error (deg) -> target speed (deg/s) ----
+    public static double POS_kP = 6.0;          // 10 deg of error asks for 60 deg/s
+    public static double POS_kI = 0.5;
+    public static double POS_I_ZONE_DEG = 5.0;
+    public static double MAX_POS_I_DEG_S = 30.0;
+    public static double MAX_VELOCITY_DEG_S = 300.0;   // fastest speed the position loop may ask for
+
+    // ---- velocity PID: speed error (deg/s) -> servo power ----
+    public static double kP = 0.002;            // power per deg/s of speed error
+    public static double kI = 0.004;
     // power per deg/s at the turret: a CR servo runs ~300-400 deg/s at full power, divided by
     // GEAR_RATIO. Measure it: full power, read "Turret vel" in telemetry, kV = 1 / that.
     public static double kV = 1.0 / 300.0;
-    public static double kS = 0.06;             // gets past the servo's dead zone around 0 power
-    public static double I_ZONE_DEG = 5.0;
-    public static double MAX_I_POWER = 0.1;
-    public static double MAX_POWER = 0.9;
+    public static double kS = 0.06;             // gets past the servos' dead zone around 0 power
+    public static double VEL_I_ZONE_DEG_S = 100.0;
+    public static double MAX_I_POWER = 0.15;
+    public static double MAX_POWER = 1.0;
     public static double DEADBAND_DEG = 0.4;    // settled inside this: stop commanding, no chatter
     // once settled, stay settled until the error grows past this (hysteresis, no buzzing at
     // the deadband edge where kS would kick the turret back and forth)
@@ -89,15 +108,23 @@ public class Turret {
     private final CRServo servo;
     private final CRServo servo2;
     private final AnalogInput feedback;
-    private final Battery battery;
-    private final PIDFController pidf = new PIDFController(kP, kI, kD, kV, kS);
+    private final AnalogInput feedback2;
+    private final PIDFController velocityPid = new PIDFController(kP, kI, 0.0, kV, kS);
+    private double positionIntegral = 0.0;
 
     private Mode mode = Mode.OFF;
     private Alliance alliance = Alliance.RED;
     private Field.CellSide upCell = Field.startingUpCell(Alliance.RED);
-    private double rawDeg = 0.0;          // last analog reading, 0..360 at the servo
-    private double unwrappedDeg = 0.0;    // servo angle with turns counted, from init
-    private double zeroDeg = 0.0;         // unwrappedDeg value that is turret forward
+    // per wire: last analog reading (0..360 at the servo), servo angle with turns counted,
+    // and the unwrapped value that is turret forward
+    private double rawDeg = 0.0;
+    private double raw2Deg = 0.0;
+    private double unwrappedDeg = 0.0;
+    private double unwrapped2Deg = 0.0;
+    private double zeroDeg = 0.0;
+    private double zero2Deg = 0.0;
+    private double wireDisagreeDeg = 0.0;
+    private boolean wiresAgree = true;
     private double trimDeg = 0.0;
     private double manualPower = 0.0;
 
@@ -109,6 +136,7 @@ public class Turret {
     private double targetDeg = 0.0;
     private double targetRateDegPerSec = 0.0;
     private double errorDeg = 0.0;
+    private double commandedVelDegPerSec = 0.0;
     private double power = 0.0;
     private double lastPowerWritten = Double.NaN;
     private double distanceIn = Double.NaN;
@@ -118,31 +146,51 @@ public class Turret {
     private boolean settled = false;
     private long lastNs;
 
-    public Turret(HardwareMap hardwareMap, Battery battery) {
+    public Turret(HardwareMap hardwareMap) {
         servo = hardwareMap.get(CRServo.class, SERVO_NAME);
         servo2 = hardwareMap.get(CRServo.class, SERVO2_NAME);
         feedback = hardwareMap.get(AnalogInput.class, FEEDBACK_NAME);
-        this.battery = battery;
+        feedback2 = hardwareMap.get(AnalogInput.class, FEEDBACK2_NAME);
 
         writePower(0.0);
 
-        rawDeg = readRawDeg();
+        rawDeg = readRawDeg(feedback);
+        raw2Deg = readRawDeg(feedback2);
         unwrappedDeg = rawDeg;
-        if (GEAR_RATIO == 1.0 && !Double.isNaN(FORWARD_RAW_DEG)) {
-            // 1:1 servo: the reading is absolute, so the turret can start anywhere
-            setAngleReference(wrapDeg(rawDeg - FORWARD_RAW_DEG) * ENCODER_DIRECTION);
-        } else {
-            setAngleReference(0.0);
+        unwrapped2Deg = raw2Deg;
+
+        // 1:1 servos: the readings are absolute, so the turret can start anywhere
+        double start = 0.0;
+        if (GEAR_RATIO == 1.0) {
+            boolean have1 = !Double.isNaN(FORWARD_RAW_DEG);
+            boolean have2 = !Double.isNaN(FORWARD_RAW2_DEG);
+            double a1 = have1 ? wrapDeg(rawDeg - FORWARD_RAW_DEG) * ENCODER_DIRECTION : 0.0;
+            double a2 = have2 ? wrapDeg(raw2Deg - FORWARD_RAW2_DEG) * ENCODER2_DIRECTION : 0.0;
+            if (have1 && have2) {
+                start = a1 + 0.5 * wrapDeg(a2 - a1);
+            } else if (have1) {
+                start = a1;
+            } else if (have2) {
+                start = a2;
+            }
         }
+        setAngleReference(start);
         lastNs = System.nanoTime();
     }
 
     /** Tell the turret its current angle (e.g. the angle AUTO ended at) instead of forward = 0. */
     public void setAngleReference(double currentAngleDeg) {
         zeroDeg = unwrappedDeg - currentAngleDeg * GEAR_RATIO * ENCODER_DIRECTION;
+        zero2Deg = unwrapped2Deg - currentAngleDeg * GEAR_RATIO * ENCODER2_DIRECTION;
         angleDeg = currentAngleDeg;
         lastAngleDeg = currentAngleDeg;
         velocityDegPerSec = 0.0;
+        resetLoops();
+    }
+
+    private void resetLoops() {
+        velocityPid.reset();
+        positionIntegral = 0.0;
     }
 
     public void update(Pose pose, Velocity velocity) {
@@ -150,7 +198,8 @@ public class Turret {
         double dt = Math.min(Math.max((now - lastNs) / 1e9, 0.001), 0.1);
         lastNs = now;
 
-        double measured = readAngleDeg();
+        // predicted angle for this loop, used to pick a wire if the two disagree
+        double measured = readAngleDeg(angleDeg + velocityDegPerSec * dt);
         angleDeg += ANGLE_FILTER * (measured - angleDeg);
         velocityDegPerSec += VELOCITY_FILTER * ((angleDeg - lastAngleDeg) / dt - velocityDegPerSec);
         lastAngleDeg = angleDeg;
@@ -175,13 +224,15 @@ public class Turret {
                 desired = 0.0;
                 break;
             case MANUAL:
-                pidf.reset();
+                resetLoops();
                 settled = false;
+                commandedVelDegPerSec = 0.0;
                 applyPower(manualPower);
                 return;
             default:
-                pidf.reset();
+                resetLoops();
                 settled = false;
+                commandedVelDegPerSec = 0.0;
                 applyPower(0.0);
                 return;
         }
@@ -199,15 +250,28 @@ public class Turret {
         }
         double output;
         if (settled) {
-            pidf.reset();
+            resetLoops();
+            commandedVelDegPerSec = 0.0;
             output = 0.0;
         } else {
-            pidf.setGains(kP, kI, kD, kV, kS);
-            pidf.integralZone = I_ZONE_DEG;
-            pidf.maxIntegralOutput = MAX_I_POWER;
-            output = pidf.calculate(errorDeg, targetRateDegPerSec - velocityDegPerSec,
-                    targetRateDegPerSec, dt, true);
-            output *= battery.compensation();
+            // position loop: how fast the turret should be turning right now
+            if (POS_kI != 0.0 && Math.abs(errorDeg) <= POS_I_ZONE_DEG) {
+                positionIntegral += errorDeg * dt;
+                double limit = MAX_POS_I_DEG_S / Math.abs(POS_kI);
+                positionIntegral = Math.max(-limit, Math.min(limit, positionIntegral));
+            } else {
+                positionIntegral = 0.0;
+            }
+            double wanted = POS_kP * errorDeg + POS_kI * positionIntegral + targetRateDegPerSec;
+            commandedVelDegPerSec = Math.max(-MAX_VELOCITY_DEG_S, Math.min(MAX_VELOCITY_DEG_S, wanted));
+
+            // velocity PID: servo power to hold that speed (servos run off the regulated servo
+            // rail, so no battery compensation here)
+            velocityPid.setGains(kP, kI, 0.0, kV, kS);
+            velocityPid.integralZone = VEL_I_ZONE_DEG_S;
+            velocityPid.maxIntegralOutput = MAX_I_POWER;
+            double speedError = commandedVelDegPerSec - velocityDegPerSec;
+            output = velocityPid.calculate(speedError, 0.0, commandedVelDegPerSec, dt, true);
         }
         applyPower(Math.max(-MAX_POWER, Math.min(MAX_POWER, output)));
     }
@@ -303,28 +367,57 @@ public class Turret {
         }
     }
 
-    /** servo shaft angle 0..360 from the position wire */
-    private double readRawDeg() {
-        double volts = feedback.getVoltage();
+    /** servo shaft angle 0..360 from a position wire */
+    private static double readRawDeg(AnalogInput wire) {
+        double volts = wire.getVoltage();
         double deg = volts / ANALOG_MAX_VOLTAGE * 360.0;
         return Math.max(0.0, Math.min(360.0, deg));
     }
 
     /**
-     * Unwraps the analog angle (it jumps 360 -> 0 once per servo turn; the servo never moves
-     * anywhere near 180 deg between two loops, so the shortest step is the real one) and
-     * converts to turret degrees from forward.
+     * Reads both wires, unwraps each (the analog angle jumps 360 -> 0 once per servo turn; a
+     * servo never moves anywhere near 180 deg between two loops, so the shortest step is the
+     * real one), converts each to turret degrees from forward and fuses them: the average while
+     * they agree, otherwise the one nearer predictedDeg (a glitched wire reads far off).
      */
-    private double readAngleDeg() {
-        double raw = readRawDeg();
+    private double readAngleDeg(double predictedDeg) {
+        double raw = readRawDeg(feedback);
         unwrappedDeg += wrapDeg(raw - rawDeg);
         rawDeg = raw;
-        return (unwrappedDeg - zeroDeg) * ENCODER_DIRECTION / GEAR_RATIO;
+        double a1 = (unwrappedDeg - zeroDeg) * ENCODER_DIRECTION / GEAR_RATIO;
+
+        double raw2 = readRawDeg(feedback2);
+        unwrapped2Deg += wrapDeg(raw2 - raw2Deg);
+        raw2Deg = raw2;
+        double a2 = (unwrapped2Deg - zero2Deg) * ENCODER2_DIRECTION / GEAR_RATIO;
+
+        wireDisagreeDeg = a1 - a2;
+        wiresAgree = Math.abs(wireDisagreeDeg) <= WIRE_AGREE_DEG;
+        if (wiresAgree) {
+            return 0.5 * (a1 + a2);
+        }
+        return Math.abs(a1 - predictedDeg) <= Math.abs(a2 - predictedDeg) ? a1 : a2;
     }
 
-    /** raw position-wire angle at the servo, for finding FORWARD_RAW_DEG */
+    /** raw position-wire angles at the servos, for finding FORWARD_RAW_DEG / FORWARD_RAW2_DEG */
     public double getRawDeg() {
         return rawDeg;
+    }
+
+    public double getRaw2Deg() {
+        return raw2Deg;
+    }
+
+    public boolean wiresAgree() {
+        return wiresAgree;
+    }
+
+    public double getVelocityDegPerSec() {
+        return velocityDegPerSec;
+    }
+
+    public double getCommandedVelocityDegPerSec() {
+        return commandedVelDegPerSec;
     }
 
     private static double wrapDeg(double degrees) {
@@ -337,7 +430,7 @@ public class Turret {
 
     public void setMode(Mode mode) {
         if (mode != this.mode) {
-            pidf.reset();
+            resetLoops();
         }
         this.mode = mode;
     }
@@ -428,7 +521,9 @@ public class Turret {
         telemetry.addData("Turret", "%s  %s CELL up  %s", mode, upCell, isOnTarget() ? "ON TARGET" : limited ? "AT LIMIT" : "");
         telemetry.addData("Turret angle / target", "%.1f / %.1f (err %.1f)", angleDeg, targetDeg, errorDeg);
         telemetry.addData("Turret trim / power", "%.1f / %.2f", trimDeg, power);
-        telemetry.addData("Turret vel / raw", "%.0f deg/s / %.1f deg (%.2f V)", velocityDegPerSec, rawDeg, feedback.getVoltage());
+        telemetry.addData("Turret vel / cmd", "%.0f / %.0f deg/s", velocityDegPerSec, commandedVelDegPerSec);
+        telemetry.addData("Turret raw 1 / 2", "%.1f / %.1f deg %s", rawDeg, raw2Deg,
+                wiresAgree ? "" : String.format("WIRES DISAGREE %.1f", wireDisagreeDeg));
         telemetry.addData("Distance to CELL", "%.1f in (lead %.1f in)", trueDistanceIn, distanceIn);
     }
 }

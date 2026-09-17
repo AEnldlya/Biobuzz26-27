@@ -56,7 +56,7 @@ public class BiobuzzTeleOp extends OpMode {
         claw = new Claw(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
-        turret = new Turret(hardwareMap, battery);
+        turret = new Turret(hardwareMap);
 
         alliance = RobotState.alliance;
         useSavedPose = RobotState.pose != null;

@@ -120,7 +120,7 @@ public abstract class AutoBase extends OpMode {
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
         // the turret must be facing forward at init
-        turret = new Turret(hardwareMap, battery);
+        turret = new Turret(hardwareMap);
         turret.setAlliance(alliance);
         turret.setUpCell(Field.startingUpCell(alliance));
         vision = new PollenVision(hardwareMap, localizer != null ? localizer::poseAt : nano -> follower.pose());

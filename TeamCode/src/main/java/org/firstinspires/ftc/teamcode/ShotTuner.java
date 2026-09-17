@@ -29,7 +29,7 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
 @TeleOp(name = "Shot Tuner", group = "Tuning")
 public class ShotTuner extends OpMode {
     private static final String[] GAIN_NAMES = {
-            "Turret kP", "Turret kI", "Turret kD", "Turret kV", "Turret kS",
+            "Turret pos kP", "Turret pos kI", "Turret vel kP", "Turret vel kI", "Turret kV", "Turret kS",
             "Shooter kP", "Shooter kI", "Shooter kV", "Shooter kS"
     };
     private Hubs hubs;
@@ -54,7 +54,7 @@ public class ShotTuner extends OpMode {
         claw = new Claw(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
-        turret = new Turret(hardwareMap, battery);
+        turret = new Turret(hardwareMap);
 
         alliance = RobotState.alliance;
         applyStartState();
@@ -202,28 +202,30 @@ public class ShotTuner extends OpMode {
 
     private static double getGain(int index) {
         switch (index) {
-            case 0: return Turret.kP;
-            case 1: return Turret.kI;
-            case 2: return Turret.kD;
-            case 3: return Turret.kV;
-            case 4: return Turret.kS;
-            case 5: return Shooter.kP;
-            case 6: return Shooter.kI;
-            case 7: return Shooter.kV;
+            case 0: return Turret.POS_kP;
+            case 1: return Turret.POS_kI;
+            case 2: return Turret.kP;
+            case 3: return Turret.kI;
+            case 4: return Turret.kV;
+            case 5: return Turret.kS;
+            case 6: return Shooter.kP;
+            case 7: return Shooter.kI;
+            case 8: return Shooter.kV;
             default: return Shooter.kS;
         }
     }
 
     private static void setGain(int index, double value) {
         switch (index) {
-            case 0: Turret.kP = value; break;
-            case 1: Turret.kI = value; break;
-            case 2: Turret.kD = value; break;
-            case 3: Turret.kV = value; break;
-            case 4: Turret.kS = value; break;
-            case 5: Shooter.kP = value; break;
-            case 6: Shooter.kI = value; break;
-            case 7: Shooter.kV = value; break;
+            case 0: Turret.POS_kP = value; break;
+            case 1: Turret.POS_kI = value; break;
+            case 2: Turret.kP = value; break;
+            case 3: Turret.kI = value; break;
+            case 4: Turret.kV = value; break;
+            case 5: Turret.kS = value; break;
+            case 6: Shooter.kP = value; break;
+            case 7: Shooter.kI = value; break;
+            case 8: Shooter.kV = value; break;
             default: Shooter.kS = value; break;
         }
     }
@@ -231,15 +233,16 @@ public class ShotTuner extends OpMode {
     /** starting value when bumping a gain up from zero */
     private static double defaultStep(int index) {
         switch (index) {
-            case 0: return 0.001;
-            case 1: return 0.0001;
-            case 2: return 0.0001;
-            case 3: return 0.001;
-            case 4: return 0.02;
-            case 5: return 0.0001;
-            case 6: return 0.0001;
-            case 7: return 0.0001;
-            default: return 0.01;
+            case 0: return 1.0;      // turret pos kP, deg/s per deg
+            case 1: return 0.1;      // turret pos kI
+            case 2: return 0.0005;   // turret vel kP, power per deg/s
+            case 3: return 0.0005;   // turret vel kI
+            case 4: return 0.001;    // turret kV
+            case 5: return 0.02;     // turret kS
+            case 6: return 0.0001;   // shooter kP
+            case 7: return 0.0001;   // shooter kI
+            case 8: return 0.0001;   // shooter kV
+            default: return 0.01;    // shooter kS
         }
     }
 
