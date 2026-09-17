@@ -3,8 +3,8 @@ package org.firstinspires.ftc.teamcode;
 import com.pedropathing.math.Pose;
 import com.pedropathing.math.Velocity;
 import com.pedropathing.utils.Angle;
-import com.qualcomm.robotcore.hardware.DcMotor;
-import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.AnalogInput;
+import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.robotcore.external.Telemetry;
@@ -19,20 +19,32 @@ import org.firstinspires.ftc.robotcore.external.Telemetry;
  * while the robot moves instead of lagging behind it.
  *
  * Turret angles are degrees from robot forward, positive = RIGHT (clockwise), same as the old
- * turret code and the trim buttons. The turret must face forward when the OpMode inits unless
- * an angle is handed over from AUTO with setAngleReference().
+ * turret code and the trim buttons.
+ *
+ * Hardware: a servo in continuous-rotation ("infinite turn") mode, so setPower() sets its
+ * SPEED, plus the servo's position wire on an analog input. The analog voltage is the servo
+ * output shaft angle, 0 to ANALOG_MAX_VOLTAGE per servo revolution, so it wraps every turn of
+ * the servo; the code unwraps it (counts turns) and divides by GEAR_RATIO to get the turret
+ * angle. With a 1:1 servo the reading is absolute: set FORWARD_RAW_DEG to the raw angle read
+ * when the turret faces forward and it can start anywhere. Otherwise the turret must face
+ * forward when the OpMode inits unless an angle is handed over from AUTO with
+ * setAngleReference().
  */
 public class Turret {
-    // ---- hardware (same wiring as the DECODE robot) ----
-    public static String MOTOR_NAME = "turretMotor";
-    // the turret motor's encoder cable is plugged into the frontRightMotor port
-    public static String ENCODER_PORT_NAME = "frontRightMotor";
-    public static double TICKS_PER_MOTOR_REV = 1425.1;   // goBILDA 50.9:1 gearmotor
-    public static double GEAR_RATIO = 2.59375;           // motor revs per turret rev
-    public static double ENCODER_DIRECTION = -1.0;       // makes a right turn read positive
+    // ---- hardware ----
+    public static String SERVO_NAME = "turretServo";     // CRServo (continuous rotation mode)
+    public static String FEEDBACK_NAME = "turretEncoder"; // analog input on the position wire
+    public static double ANALOG_MAX_VOLTAGE = 3.3;       // voltage at a full servo revolution
+    public static double GEAR_RATIO = 1.0;               // servo revs per turret rev
+    /** raw feedback angle (deg, before direction) with the turret facing forward; NaN = the
+     *  turret faces forward at init (required when GEAR_RATIO != 1) */
+    public static double FORWARD_RAW_DEG = Double.NaN;
+    public static double ENCODER_DIRECTION = 1.0;        // makes a right turn read positive
     public static double POWER_DIRECTION = 1.0;          // positive power turns the turret right
     public static double MIN_ANGLE_DEG = -180.0;         // cable limits relative to forward
     public static double MAX_ANGLE_DEG = 180.0;
+    /** weight of each new analog sample (1 = no filtering); analog reads carry a little noise */
+    public static double ANGLE_FILTER = 0.7;
     // turret pivot relative to the robot's odometry tracking center, inches
     public static double PIVOT_FORWARD_IN = 0.0;
     public static double PIVOT_LEFT_IN = 0.0;
@@ -41,9 +53,10 @@ public class Turret {
     public static double kP = 0.007;
     public static double kI = 0.0005;
     public static double kD = 0.0004;
-    // power per deg/s: a 117 RPM motor through 2.59375:1 turns the turret ~270 deg/s at full power
-    public static double kV = 1.0 / 270.0;
-    public static double kS = 0.08;             // static friction kick (the old MIN_POWER)
+    // power per deg/s at the turret: a CR servo runs ~300-400 deg/s at full power, divided by
+    // GEAR_RATIO. Measure it: full power, read "Turret vel" in telemetry, kV = 1 / that.
+    public static double kV = 1.0 / 300.0;
+    public static double kS = 0.06;             // gets past the servo's dead zone around 0 power
     public static double I_ZONE_DEG = 5.0;
     public static double MAX_I_POWER = 0.1;
     public static double MAX_POWER = 0.9;
@@ -68,15 +81,17 @@ public class Turret {
         OFF
     }
 
-    private final DcMotorEx motor;
-    private final DcMotorEx encoder;
+    private final CRServo servo;
+    private final AnalogInput feedback;
     private final Battery battery;
     private final PIDFController pidf = new PIDFController(kP, kI, kD, kV, kS);
 
     private Mode mode = Mode.OFF;
     private Alliance alliance = Alliance.RED;
     private Field.CellSide upCell = Field.startingUpCell(Alliance.RED);
-    private double zeroTicks;
+    private double rawDeg = 0.0;          // last analog reading, 0..360 at the servo
+    private double unwrappedDeg = 0.0;    // servo angle with turns counted, from init
+    private double zeroDeg = 0.0;         // unwrappedDeg value that is turret forward
     private double trimDeg = 0.0;
     private double manualPower = 0.0;
 
@@ -98,21 +113,26 @@ public class Turret {
     private long lastNs;
 
     public Turret(HardwareMap hardwareMap, Battery battery) {
-        motor = hardwareMap.get(DcMotorEx.class, MOTOR_NAME);
-        encoder = hardwareMap.get(DcMotorEx.class, ENCODER_PORT_NAME);
+        servo = hardwareMap.get(CRServo.class, SERVO_NAME);
+        feedback = hardwareMap.get(AnalogInput.class, FEEDBACK_NAME);
         this.battery = battery;
 
-        motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
-        motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         writePower(0.0);
 
-        zeroTicks = encoder.getCurrentPosition();
+        rawDeg = readRawDeg();
+        unwrappedDeg = rawDeg;
+        if (GEAR_RATIO == 1.0 && !Double.isNaN(FORWARD_RAW_DEG)) {
+            // 1:1 servo: the reading is absolute, so the turret can start anywhere
+            setAngleReference(wrapDeg(rawDeg - FORWARD_RAW_DEG) * ENCODER_DIRECTION);
+        } else {
+            setAngleReference(0.0);
+        }
         lastNs = System.nanoTime();
     }
 
     /** Tell the turret its current angle (e.g. the angle AUTO ended at) instead of forward = 0. */
     public void setAngleReference(double currentAngleDeg) {
-        zeroTicks = encoder.getCurrentPosition() - currentAngleDeg * ticksPerDegree() * ENCODER_DIRECTION;
+        zeroDeg = unwrappedDeg - currentAngleDeg * GEAR_RATIO * ENCODER_DIRECTION;
         angleDeg = currentAngleDeg;
         lastAngleDeg = currentAngleDeg;
         velocityDegPerSec = 0.0;
@@ -123,7 +143,8 @@ public class Turret {
         double dt = Math.min(Math.max((now - lastNs) / 1e9, 0.001), 0.1);
         lastNs = now;
 
-        angleDeg = readAngleDeg();
+        double measured = readAngleDeg();
+        angleDeg += ANGLE_FILTER * (measured - angleDeg);
         velocityDegPerSec += VELOCITY_FILTER * ((angleDeg - lastAngleDeg) / dt - velocityDegPerSec);
         lastAngleDeg = angleDeg;
 
@@ -269,17 +290,33 @@ public class Turret {
         // skip redundant writes; each one is a hub transaction
         if (Double.isNaN(lastPowerWritten) || Math.abs(value - lastPowerWritten) > 0.005
                 || (value == 0.0 && lastPowerWritten != 0.0)) {
-            motor.setPower(value);
+            servo.setPower(value);
             lastPowerWritten = value;
         }
     }
 
-    private double readAngleDeg() {
-        return (encoder.getCurrentPosition() - zeroTicks) * ENCODER_DIRECTION / ticksPerDegree();
+    /** servo shaft angle 0..360 from the position wire */
+    private double readRawDeg() {
+        double volts = feedback.getVoltage();
+        double deg = volts / ANALOG_MAX_VOLTAGE * 360.0;
+        return Math.max(0.0, Math.min(360.0, deg));
     }
 
-    private static double ticksPerDegree() {
-        return TICKS_PER_MOTOR_REV * GEAR_RATIO / 360.0;
+    /**
+     * Unwraps the analog angle (it jumps 360 -> 0 once per servo turn; the servo never moves
+     * anywhere near 180 deg between two loops, so the shortest step is the real one) and
+     * converts to turret degrees from forward.
+     */
+    private double readAngleDeg() {
+        double raw = readRawDeg();
+        unwrappedDeg += wrapDeg(raw - rawDeg);
+        rawDeg = raw;
+        return (unwrappedDeg - zeroDeg) * ENCODER_DIRECTION / GEAR_RATIO;
+    }
+
+    /** raw position-wire angle at the servo, for finding FORWARD_RAW_DEG */
+    public double getRawDeg() {
+        return rawDeg;
     }
 
     private static double wrapDeg(double degrees) {
@@ -383,6 +420,7 @@ public class Turret {
         telemetry.addData("Turret", "%s  %s CELL up  %s", mode, upCell, isOnTarget() ? "ON TARGET" : limited ? "AT LIMIT" : "");
         telemetry.addData("Turret angle / target", "%.1f / %.1f (err %.1f)", angleDeg, targetDeg, errorDeg);
         telemetry.addData("Turret trim / power", "%.1f / %.2f", trimDeg, power);
+        telemetry.addData("Turret vel / raw", "%.0f deg/s / %.1f deg (%.2f V)", velocityDegPerSec, rawDeg, feedback.getVoltage());
         telemetry.addData("Distance to CELL", "%.1f in (lead %.1f in)", trueDistanceIn, distanceIn);
     }
 }

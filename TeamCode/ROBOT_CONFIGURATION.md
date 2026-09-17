@@ -17,10 +17,11 @@ Hardware names the BIOBUZZ OpModes expect, and how the main subsystems fit toget
 | Name | Type | Used by |
 | --- | --- | --- |
 | `frontLeftMotor` | DC motor | Drive |
-| `frontRightMotor` | DC motor with encoder | Drive. **The turret encoder cable is plugged into this motor's encoder port** (`Turret.ENCODER_PORT_NAME`) |
+| `frontRightMotor` | DC motor | Drive |
 | `backLeftMotor` | DC motor | Drive |
 | `backRightMotor` | DC motor | Drive |
-| `turretMotor` | DC motor (`DcMotorEx`) | Turret rotation, goBILDA 117 RPM (1425.1 ticks/rev) through 2.59375:1 |
+| `turretServo` | Continuous rotation servo (`CRServo`) | Turret rotation; the servo must be programmed to continuous / "infinite turn" mode |
+| `turretEncoder` | Analog input | The servo's position wire: 0 to `Turret.ANALOG_MAX_VOLTAGE` per servo revolution |
 | `intakeMotor` | DC motor | Intake (`Claw`) |
 | `shooterMotor`, `shooterMotor2` | DC motors with encoders | Flywheel; RPM feedback averages both encoders |
 | `aimServo` | Servo | Shooter hood |
@@ -51,8 +52,17 @@ only matter for the fallback heading.
 ## Turret
 
 - Field-relative aim from odometry only, no camera. Angles are degrees from robot forward,
-  positive = right. The turret must face forward when an OpMode inits unless the angle was
-  handed over from AUTO through `RobotState`.
+  positive = right.
+- Actuator is a servo in continuous-rotation mode, so `setPower()` commands speed and the
+  PIDF closes the loop on the analog position wire. The analog angle wraps once per servo
+  revolution; the code unwraps it and divides by `Turret.GEAR_RATIO` (servo revs per turret
+  rev).
+- Starting position: with `GEAR_RATIO = 1` set `Turret.FORWARD_RAW_DEG` to the "Turret raw"
+  telemetry value read with the turret facing forward, and the turret can start anywhere. With
+  any other ratio (or `FORWARD_RAW_DEG` left NaN) the turret must face forward when an OpMode
+  inits unless the angle was handed over from AUTO through `RobotState`.
+- Measure `Turret.kV`: run the turret at full power (Shot Tuner, MANUAL mode) and read
+  "Turret vel"; kV = 1 / that speed in deg/s.
 - Software limits `Turret.MIN_ANGLE_DEG` / `MAX_ANGLE_DEG` (±180). The turret pins at a limit
   instead of swinging 360° when the goal is just past it.
 - PIDF with velocity feedforward: the turret cancels the robot's own spin and drive so it stays
@@ -60,8 +70,9 @@ only matter for the fallback heading.
   `ShotTable.TIME_OF_FLIGHT_S`).
 - Settle hysteresis: it stops commanding inside `DEADBAND_DEG` and only re-engages past
   `UNSETTLE_DEG`, so it does not buzz on target.
-- If the turret tracks the wrong way, flip `Turret.ENCODER_DIRECTION`; if the motor drives the
-  wrong way, flip `Turret.POWER_DIRECTION`. Do that before touching the gains.
+- If the turret angle reads the wrong way (turn it right by hand, the angle should go up), flip
+  `Turret.ENCODER_DIRECTION`; if positive power turns it left, flip `Turret.POWER_DIRECTION`.
+  Do that before touching the gains.
 - `Turret.PIVOT_FORWARD_IN` / `PIVOT_LEFT_IN`: turret pivot relative to the odometry centre.
 
 ## Shooter
