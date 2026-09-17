@@ -32,8 +32,13 @@ import org.firstinspires.ftc.robotcore.external.Telemetry;
  */
 public class Turret {
     // ---- hardware ----
-    public static String SERVO_NAME = "turretServo";     // CRServo (continuous rotation mode)
-    public static String FEEDBACK_NAME = "turretEncoder"; // analog input on the position wire
+    // two CR servos (continuous rotation mode) drive the same ring; both get the same power
+    public static String SERVO_NAME = "turretServo";
+    public static String SERVO2_NAME = "turretServo2";
+    /** +1 if the second servo turns the turret the same way as the first for the same power,
+     *  -1 if it is mounted mirrored (opposite sides of the ring, facing each other) */
+    public static double SERVO2_DIRECTION = 1.0;
+    public static String FEEDBACK_NAME = "turretEncoder"; // analog input on one servo's position wire
     public static double ANALOG_MAX_VOLTAGE = 3.3;       // voltage at a full servo revolution
     public static double GEAR_RATIO = 1.0;               // servo revs per turret rev
     /** raw feedback angle (deg, before direction) with the turret facing forward; NaN = the
@@ -82,6 +87,7 @@ public class Turret {
     }
 
     private final CRServo servo;
+    private final CRServo servo2;
     private final AnalogInput feedback;
     private final Battery battery;
     private final PIDFController pidf = new PIDFController(kP, kI, kD, kV, kS);
@@ -114,6 +120,7 @@ public class Turret {
 
     public Turret(HardwareMap hardwareMap, Battery battery) {
         servo = hardwareMap.get(CRServo.class, SERVO_NAME);
+        servo2 = hardwareMap.get(CRServo.class, SERVO2_NAME);
         feedback = hardwareMap.get(AnalogInput.class, FEEDBACK_NAME);
         this.battery = battery;
 
@@ -291,6 +298,7 @@ public class Turret {
         if (Double.isNaN(lastPowerWritten) || Math.abs(value - lastPowerWritten) > 0.005
                 || (value == 0.0 && lastPowerWritten != 0.0)) {
             servo.setPower(value);
+            servo2.setPower(SERVO2_DIRECTION * value);
             lastPowerWritten = value;
         }
     }

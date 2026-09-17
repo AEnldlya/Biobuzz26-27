@@ -20,8 +20,8 @@ Hardware names the BIOBUZZ OpModes expect, and how the main subsystems fit toget
 | `frontRightMotor` | DC motor | Drive |
 | `backLeftMotor` | DC motor | Drive |
 | `backRightMotor` | DC motor | Drive |
-| `turretServo` | Continuous rotation servo (`CRServo`) | Turret rotation; the servo must be programmed to continuous / "infinite turn" mode |
-| `turretEncoder` | Analog input | The servo's position wire: 0 to `Turret.ANALOG_MAX_VOLTAGE` per servo revolution |
+| `turretServo`, `turretServo2` | Continuous rotation servos (`CRServo`) | Turret rotation, both driving the same ring; both must be programmed to continuous / "infinite turn" mode. Set `Turret.SERVO2_DIRECTION` to -1 if the second is mounted mirrored |
+| `turretEncoder` | Analog input | One servo's position wire: 0 to `Turret.ANALOG_MAX_VOLTAGE` per servo revolution |
 | `intakeMotor` | DC motor | Intake (`Claw`) |
 | `shooterMotor`, `shooterMotor2` | DC motors with encoders | Flywheel; RPM feedback averages both encoders |
 | `aimServo` | Servo | Shooter hood |
@@ -53,10 +53,11 @@ only matter for the fallback heading.
 
 - Field-relative aim from odometry only, no camera. Angles are degrees from robot forward,
   positive = right.
-- Actuator is a servo in continuous-rotation mode, so `setPower()` commands speed and the
-  PIDF closes the loop on the analog position wire. The analog angle wraps once per servo
-  revolution; the code unwraps it and divides by `Turret.GEAR_RATIO` (servo revs per turret
-  rev).
+- Actuators are two servos in continuous-rotation mode driving the same ring, so `setPower()`
+  commands speed and the PIDF closes the loop on one servo's analog position wire. The analog
+  angle wraps once per servo revolution; the code unwraps it and divides by `Turret.GEAR_RATIO`
+  (servo revs per turret rev). Check the two servos turn the ring the same way before anything
+  else: with power applied they must not fight each other (`Turret.SERVO2_DIRECTION`).
 - Starting position: with `GEAR_RATIO = 1` set `Turret.FORWARD_RAW_DEG` to the "Turret raw"
   telemetry value read with the turret facing forward, and the turret can start anywhere. With
   any other ratio (or `FORWARD_RAW_DEG` left NaN) the turret must face forward when an OpMode
