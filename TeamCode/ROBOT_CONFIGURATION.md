@@ -22,10 +22,10 @@ Hardware names the BIOBUZZ OpModes expect, and how the main subsystems fit toget
 | `backRightMotor` | DC motor | Drive |
 | `turretServo`, `turretServo2` | Continuous rotation servos (`CRServo`) | Turret rotation, both driving the same ring; both must be programmed to continuous / "infinite turn" mode. Set `Turret.SERVO2_DIRECTION` to -1 if the second is mounted mirrored |
 | `turretEncoder`, `turretEncoder2` | Analog inputs | The two servos' position wires: 0 to `Turret.ANALOG_MAX_VOLTAGE` per servo revolution. Both are used: averaged while they agree, the glitched one ignored when they don't |
-| `intakeMotor` | DC motor | Intake (`Claw`) |
+| `intakeMotor`, `transferMotor` | DC motors | Intake and transfer (`Intake`): both run while intaking and while shooting, off otherwise |
 | `shooterMotor`, `shooterMotor2` | DC motors with encoders | Flywheel; RPM feedback averages both encoders |
 | `aimServo` | Servo | Shooter hood |
-| `blockServo` | Servo | Blocker between intake and flywheel |
+| `blockServo` | Servo | Blocker between transfer and flywheel: engaged while intaking (balls stack behind it), released while shooting |
 | `pinpoint` | goBILDA Pinpoint (I2C) | Odometry: two dead wheels + the Pinpoint's IMU |
 | `imu` | Control Hub IMU (built in) | Heading backstop if the Pinpoint faults (`FusedPinpointLocalizer`) |
 | `limelight` | Limelight 3A | Pollen colour blobs in AUTO (`vision/PollenVision`) |
@@ -85,6 +85,17 @@ only matter for the fallback heading.
   Do that before touching the gains.
 - `Turret.PIVOT_FORWARD_IN` / `PIVOT_LEFT_IN`: turret pivot relative to the odometry centre.
 
+## Intake (`Intake.java`)
+
+| Mode | Intake + transfer motors | Blocker |
+| --- | --- | --- |
+| `OFF` | off | engaged |
+| `INTAKE` | on (`INTAKE_POWER`, `TRANSFER_POWER`) | engaged |
+| `SHOOT` | on (`SHOOT_*_POWER`, slower so the flywheel recovers) | released |
+
+Shooting is intaking straight through: the same motors feed the flywheel once the blocker
+drops. Servo positions are `BLOCKER_ENGAGED` / `BLOCKER_RELEASED`.
+
 ## Shooter
 
 - Flywheel power = voltage-compensated feedforward (`kV * RPM + kS`) plus PI; full power when
@@ -123,3 +134,30 @@ the up-CELL; the auto refuses to fire from the wrong side (G417).
 3. `ShotTable` rows with `Shot Tuner`.
 4. Limelight pipelines, then camera mount numbers with `Pollen Vision Test`.
 5. Field waypoints, then `PathProfiles` end constraints if paths stall or overshoot.
+
+## Simulator (`TeamCode/src/test/java/.../sim`)
+
+The real OpModes, turret, shooter, intake, Pedro Foresight and the pollen finder run on the
+desktop JVM against a simulated robot. Run it with:
+
+```
+./gradlew :TeamCode:testDebugUnitTest
+```
+
+It takes about 90 s (the code uses wall-clock timers, so the 30 s autos run in real time) and
+writes replays to `TeamCode/build/sim/*.html` (open in a browser: play / scrub, the field from
+above, the turret and where it should point, pollen, shots, Driver Station telemetry) plus
+matching CSVs.
+
+| Test | What it proves |
+| --- | --- |
+| `AutoSimTest` | `RED AUTO` and `BLUE AUTO` end to end: preload volley scores, camera picks the biggest purple pile and ignores green, intake collects it, second volley, park |
+| `TurretTrackingSimTest` | turret stays on the CELL while the robot spins and drives; a glitching position wire is flagged and ignored |
+| `PollenVisionSimTest` | the pollen finder places a pile within an inch or two of where it is |
+
+Models: `SimRobot` (mecanum velocity lag, brake, odometry noise), `SimTurret` (two CR servos
+with dead zone and lag, two analog wires with noise and wrap), `SimShooter` (flywheel lag,
+RPM drop per ball, ShotTable inverted for range), `SimCamera` (Limelight FOV, frame rate,
+latency, pipeline switch time), and ball handling in `SimWorld`. The robot code is swapped
+onto the models only through `Constants.localizerFactory` / `drivetrainFactory` and
+`PollenVision.CAMERA_FACTORY`.

@@ -124,7 +124,8 @@ public class Turret {
     private double zeroDeg = 0.0;
     private double zero2Deg = 0.0;
     private double wireDisagreeDeg = 0.0;
-    private boolean wiresAgree = true;
+    private long lastWireFaultNs = 0;
+    private int wireFaults = 0;
     private double trimDeg = 0.0;
     private double manualPower = 0.0;
 
@@ -392,11 +393,19 @@ public class Turret {
         double a2 = (unwrapped2Deg - zero2Deg) * ENCODER2_DIRECTION / GEAR_RATIO;
 
         wireDisagreeDeg = a1 - a2;
-        wiresAgree = Math.abs(wireDisagreeDeg) <= WIRE_AGREE_DEG;
-        if (wiresAgree) {
+        if (Math.abs(wireDisagreeDeg) <= WIRE_AGREE_DEG) {
             return 0.5 * (a1 + a2);
         }
-        return Math.abs(a1 - predictedDeg) <= Math.abs(a2 - predictedDeg) ? a1 : a2;
+        // one wire glitched: trust the one nearer where the turret should be, and re-seat the
+        // other onto it so its unwrapping does not drift off while it is bad
+        wireFaults++;
+        lastWireFaultNs = System.nanoTime();
+        if (Math.abs(a1 - predictedDeg) <= Math.abs(a2 - predictedDeg)) {
+            zero2Deg = unwrapped2Deg - a1 * GEAR_RATIO * ENCODER2_DIRECTION;
+            return a1;
+        }
+        zeroDeg = unwrappedDeg - a2 * GEAR_RATIO * ENCODER_DIRECTION;
+        return a2;
     }
 
     /** raw position-wire angles at the servos, for finding FORWARD_RAW_DEG / FORWARD_RAW2_DEG */
@@ -408,8 +417,13 @@ public class Turret {
         return raw2Deg;
     }
 
+    /** false while a wire has disagreed with the other in the last half second */
     public boolean wiresAgree() {
-        return wiresAgree;
+        return lastWireFaultNs == 0 || System.nanoTime() - lastWireFaultNs > 500_000_000L;
+    }
+
+    public int getWireFaults() {
+        return wireFaults;
     }
 
     public double getVelocityDegPerSec() {
@@ -523,7 +537,8 @@ public class Turret {
         telemetry.addData("Turret trim / power", "%.1f / %.2f", trimDeg, power);
         telemetry.addData("Turret vel / cmd", "%.0f / %.0f deg/s", velocityDegPerSec, commandedVelDegPerSec);
         telemetry.addData("Turret raw 1 / 2", "%.1f / %.1f deg %s", rawDeg, raw2Deg,
-                wiresAgree ? "" : String.format("WIRES DISAGREE %.1f", wireDisagreeDeg));
+                wiresAgree() ? (wireFaults > 0 ? wireFaults + " wire faults" : "")
+                        : String.format("WIRES DISAGREE %.1f", wireDisagreeDeg));
         telemetry.addData("Distance to CELL", "%.1f in (lead %.1f in)", trueDistanceIn, distanceIn);
     }
 }

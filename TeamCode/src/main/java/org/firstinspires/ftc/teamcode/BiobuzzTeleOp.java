@@ -34,7 +34,7 @@ public class BiobuzzTeleOp extends OpMode {
 
     private Hubs hubs;
     private Follower follower;
-    private Claw claw;
+    private Intake intake;
     private Shooter shooter;
     private Turret turret;
 
@@ -53,7 +53,7 @@ public class BiobuzzTeleOp extends OpMode {
         hubs = new Hubs(hardwareMap);
         Battery battery = new Battery(hardwareMap);
         follower = Constants.create(hardwareMap);
-        claw = new Claw(hardwareMap);
+        intake = new Intake(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
         turret = new Turret(hardwareMap);
@@ -135,7 +135,7 @@ public class BiobuzzTeleOp extends OpMode {
         shooter.setShotDistance(turret.getDistance(), rpmTrim);
         shooter.update();
 
-        handleClaw();
+        handleIntake();
 
         boolean ready = turret.isOnTarget() && shooter.atSpeed() && Field.isOnOpeningSide(pose, turret.getUpCell());
         if (ready && !wasReady) {
@@ -149,8 +149,7 @@ public class BiobuzzTeleOp extends OpMode {
 
     @Override
     public void stop() {
-        claw.stop();
-        claw.close();
+        intake.stop();
         shooter.stop();
         turret.stop();
     }
@@ -197,26 +196,22 @@ public class BiobuzzTeleOp extends OpMode {
         }
     }
 
-    private void handleClaw() {
+    private void handleIntake() {
         if (gamepad1.right_bumper) {
-            claw.feedForShot();
-            claw.release();
+            intake.shoot();
             firing = true;
             return;
         }
 
         if (firing) {
-            claw.close();
-            claw.stop();
+            intake.stop();
             firing = false;
         }
 
         if (gamepad1.right_trigger > 0.5 || gamepad2.right_trigger > 0.5) {
-            claw.close();
-            claw.run();
+            intake.intake();
         } else if (gamepad1.left_trigger > 0.5 || gamepad1.left_bumper) {
-            claw.close();
-            claw.stop();
+            intake.stop();
         }
     }
 

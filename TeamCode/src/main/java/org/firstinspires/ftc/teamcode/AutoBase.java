@@ -61,7 +61,7 @@ public abstract class AutoBase extends OpMode {
     /** don't start a new cycle unless this much time is left */
     public static double CYCLE_NEEDS_S = 11.0;
 
-    protected enum State {
+    public enum State {
         TO_SCORE, SHOOT, TO_SCAN, SCAN, APPROACH, COLLECT, RETURN, PARK, DONE
     }
 
@@ -72,7 +72,7 @@ public abstract class AutoBase extends OpMode {
     protected Hubs hubs;
     protected Follower follower;
     protected FusedPinpointLocalizer localizer;
-    protected Claw claw;
+    protected Intake intake;
     protected Shooter shooter;
     protected Turret turret;
     protected PollenVision vision;
@@ -116,17 +116,17 @@ public abstract class AutoBase extends OpMode {
         follower = Constants.create(hardwareMap);
         localizer = Constants.fusedLocalizer(follower);
         follower.setPose(startPose);
-        claw = new Claw(hardwareMap);
+        intake = new Intake(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
         // the turret must be facing forward at init
         turret = new Turret(hardwareMap);
         turret.setAlliance(alliance);
         turret.setUpCell(Field.startingUpCell(alliance));
-        vision = new PollenVision(hardwareMap, localizer != null ? localizer::poseAt : nano -> follower.pose());
+        vision = new PollenVision(hardwareMap, Constants.poseHistory(follower));
         vision.setTarget(TARGET_POLLEN);
 
-        claw.close();
+        intake.stop();
         RobotState.save(alliance, startPose, turret);
     }
 
@@ -174,8 +174,7 @@ public abstract class AutoBase extends OpMode {
     @Override
     public void stop() {
         vision.stop();
-        claw.stop();
-        claw.close();
+        intake.stop();
         shooter.stop();
         turret.stop();
     }
@@ -233,8 +232,7 @@ public abstract class AutoBase extends OpMode {
 
             case APPROACH:
                 if (pathDone()) {
-                    claw.close();
-                    claw.run();
+                    intake.intake();
                     if (fallbackPickup) {
                         // no camera target: sit on the fallback spot and intake
                         follower.hold(fallbackPickupPose);
@@ -266,7 +264,7 @@ public abstract class AutoBase extends OpMode {
             case RETURN:
                 if (stateTimer.seconds() > 0.4) {
                     // balls are in: stop the intake so nothing is fed early
-                    claw.stop();
+                    intake.stop();
                 }
                 if (pathDone()) {
                     cycles++;
@@ -277,8 +275,7 @@ public abstract class AutoBase extends OpMode {
 
             case PARK:
                 if (enter) {
-                    claw.stop();
-                    claw.close();
+                    intake.stop();
                     followTo(parkPose, PathProfiles.park());
                 }
                 if (pathDone()) {
@@ -336,8 +333,7 @@ public abstract class AutoBase extends OpMode {
 
     private void abortVolley() {
         volley = Volley.DONE;
-        claw.close();
-        claw.stop();
+        intake.stop();
     }
 
     protected boolean readyToFire(Pose pose) {
@@ -356,13 +352,11 @@ public abstract class AutoBase extends OpMode {
                     // shooting into the outside of the CELL is a G417 violation: don't
                     note = "wrong side of HIVE, not firing";
                     volley = Volley.DONE;
-                    claw.close();
-                    claw.stop();
+                    intake.stop();
                     return true;
                 }
                 if (readyToFire(pose) || volleyTimer.seconds() > AIM_TIMEOUT_S) {
-                    claw.feedForShot();
-                    claw.release();
+                    intake.shoot();
                     volley = Volley.FEEDING;
                     volleyTimer.reset();
                 }
@@ -370,8 +364,7 @@ public abstract class AutoBase extends OpMode {
 
             case FEEDING:
                 if (volleyTimer.seconds() >= SHOT_FEED_S) {
-                    claw.close();
-                    claw.stop();
+                    intake.stop();
                     shotsLeft--;
                     shotsFired++;
                     volley = Volley.RECOVER;
@@ -411,7 +404,7 @@ public abstract class AutoBase extends OpMode {
         stateTimer.reset();
     }
 
-    protected State getState() {
+    public State getState() {
         return state;
     }
 

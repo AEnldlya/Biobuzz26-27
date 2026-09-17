@@ -17,6 +17,8 @@ import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
+import java.util.function.Function;
+
 /**
  * Pedro Pathing 3.0 robot config.
  *
@@ -93,12 +95,18 @@ public class Constants {
         c.brakeAtEnd.set(true);
     });
 
+    // The simulator swaps these for models of the robot; everything else stays the real code.
+    public static Function<HardwareMap, Localizer> localizerFactory =
+            hardwareMap -> new FusedPinpointLocalizer(hardwareMap, localizerConfig);
+    public static Function<HardwareMap, Drivetrain> drivetrainFactory =
+            hardwareMap -> new CompensatedDrivetrain(hardwareMap, drivetrainConfig);
+
     public static Localizer localizer(HardwareMap hardwareMap) {
-        return new FusedPinpointLocalizer(hardwareMap, localizerConfig);
+        return localizerFactory.apply(hardwareMap);
     }
 
     public static Drivetrain drivetrain(HardwareMap hardwareMap) {
-        return new CompensatedDrivetrain(hardwareMap, drivetrainConfig);
+        return drivetrainFactory.apply(hardwareMap);
     }
 
     public static Algorithm algorithm() {
@@ -117,5 +125,13 @@ public class Constants {
     public static FusedPinpointLocalizer fusedLocalizer(Follower follower) {
         return follower.localizer instanceof FusedPinpointLocalizer
                 ? (FusedPinpointLocalizer) follower.localizer : null;
+    }
+
+    /** Pose history for camera latency compensation: the localizer's if it keeps one. */
+    public static PoseHistory poseHistory(Follower follower) {
+        if (follower.localizer instanceof PoseHistory) {
+            return (PoseHistory) follower.localizer;
+        }
+        return nanoTime -> follower.pose();
     }
 }

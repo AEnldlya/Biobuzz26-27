@@ -39,7 +39,7 @@ public class PollenVisionTest extends OpMode {
         follower = Constants.create(hardwareMap);
         localizer = Constants.fusedLocalizer(follower);
         follower.setPose(Field.startPose(RobotState.alliance));
-        vision = new PollenVision(hardwareMap, localizer != null ? localizer::poseAt : nano -> follower.pose());
+        vision = new PollenVision(hardwareMap, Constants.poseHistory(follower));
         vision.setTarget(pollens[pollenIndex]);
         telemetry.addData("Limelight", vision.isConnected() ? "found" : "NOT FOUND");
         telemetry.update();

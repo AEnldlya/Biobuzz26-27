@@ -40,7 +40,7 @@ import java.util.Map;
  * The hub IMU is only read every IMU_POLL_MS while the Pinpoint is healthy (an IMU read is a
  * separate I2C transaction, not part of the bulk read), and every loop in fallback.
  */
-public class FusedPinpointLocalizer implements Localizer {
+public class FusedPinpointLocalizer implements Localizer, PoseHistory {
     /** Control Hub IMU name in the robot configuration; leave the hub's built-in "imu". */
     public static String IMU_NAME = "imu";
     /** How the Control Hub is mounted; only matters for the fallback heading. */
@@ -191,6 +191,7 @@ public class FusedPinpointLocalizer implements Localizer {
      * history. Times before the history return its oldest pose; times after it return the
      * current pose.
      */
+    @Override
     public Pose poseAt(long nanoTime) {
         if (history.isEmpty()) {
             return state.pose();

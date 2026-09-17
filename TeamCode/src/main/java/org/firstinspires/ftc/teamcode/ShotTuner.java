@@ -35,7 +35,7 @@ public class ShotTuner extends OpMode {
     private Hubs hubs;
     private Battery battery;
     private Follower follower;
-    private Claw claw;
+    private Intake intake;
     private Shooter shooter;
     private Turret turret;
 
@@ -51,7 +51,7 @@ public class ShotTuner extends OpMode {
         hubs = new Hubs(hardwareMap);
         battery = new Battery(hardwareMap);
         follower = Constants.create(hardwareMap);
-        claw = new Claw(hardwareMap);
+        intake = new Intake(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
         turret = new Turret(hardwareMap);
@@ -123,20 +123,17 @@ public class ShotTuner extends OpMode {
         shooter.update();
 
         if (gamepad1.right_bumper) {
-            claw.feedForShot();
-            claw.release();
+            intake.shoot();
             firing = true;
         } else {
             if (firing) {
-                claw.close();
-                claw.stop();
+                intake.stop();
                 firing = false;
             }
             if (gamepad1.right_trigger > 0.5) {
-                claw.close();
-                claw.run();
+                intake.intake();
             } else if (gamepad1.left_trigger > 0.5) {
-                claw.stop();
+                intake.stop();
             }
         }
 
@@ -146,8 +143,7 @@ public class ShotTuner extends OpMode {
 
     @Override
     public void stop() {
-        claw.stop();
-        claw.close();
+        intake.stop();
         shooter.stop();
         turret.stop();
     }

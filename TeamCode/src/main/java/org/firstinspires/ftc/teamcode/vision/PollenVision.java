@@ -2,16 +2,15 @@ package org.firstinspires.ftc.teamcode.vision;
 
 import com.pedropathing.math.Pose;
 import com.pedropathing.utils.Angle;
-import com.qualcomm.hardware.limelightvision.LLResult;
-import com.qualcomm.hardware.limelightvision.LLResultTypes;
-import com.qualcomm.hardware.limelightvision.Limelight3A;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 import org.firstinspires.ftc.teamcode.Field;
+import org.firstinspires.ftc.teamcode.pedro.PoseHistory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * Limelight colour-blob pollen finder for AUTO: "go to where there is the most of a certain
@@ -81,18 +80,12 @@ public class PollenVision {
         }
     }
 
-    /** Supplies the robot pose at a System.nanoTime() instant (see FusedPinpointLocalizer.poseAt). */
-    public interface PoseHistory {
-        Pose poseAt(long nanoTime);
-    }
-
-    private final Limelight3A limelight;
+    private final PollenCamera camera;
     private final PoseHistory poseHistory;
     private final List<Cluster> clusters = new ArrayList<>();
 
     private Pollen target = Pollen.PURPLE;
     private boolean running = false;
-    private boolean connected = true;
     private double lastFrameTimestamp = -1.0;
     private long lastFrameNs = 0;
     private long lastDecayNs = 0;
@@ -101,33 +94,34 @@ public class PollenVision {
     private int framesUsed = 0;
     private int reportedPipeline = -1;
 
+    /** How the hardware-map constructor finds its camera; the simulator swaps in a virtual one. */
+    public static Function<HardwareMap, PollenCamera> CAMERA_FACTORY =
+            hardwareMap -> new LimelightPollenCamera(hardwareMap, NAME);
+
+    /** The real robot: a Limelight named NAME. */
     public PollenVision(HardwareMap hardwareMap, PoseHistory poseHistory) {
-        Limelight3A found;
-        try {
-            found = hardwareMap.get(Limelight3A.class, NAME);
-        } catch (RuntimeException e) {
-            found = null;
-            connected = false;
-        }
-        limelight = found;
+        this(CAMERA_FACTORY.apply(hardwareMap), poseHistory);
+    }
+
+    /** Any camera, e.g. the simulator's. */
+    public PollenVision(PollenCamera camera, PoseHistory poseHistory) {
+        this.camera = camera;
         this.poseHistory = poseHistory;
     }
 
     /** Start polling the camera on the selected pollen's pipeline. */
     public void start() {
-        if (limelight == null) {
+        if (!camera.isConnected()) {
             return;
         }
-        limelight.setPollRateHz(POLL_RATE_HZ);
-        limelight.pipelineSwitch(target.pipeline);
-        limelight.start();
+        camera.start(target.pipeline, POLL_RATE_HZ);
         running = true;
         lastDecayNs = System.nanoTime();
     }
 
     public void stop() {
-        if (limelight != null && running) {
-            limelight.stop();
+        if (camera.isConnected() && running) {
+            camera.stop();
         }
         running = false;
     }
@@ -140,8 +134,8 @@ public class PollenVision {
         target = pollen;
         clusters.clear();
         lastFrameTimestamp = -1.0;
-        if (limelight != null && running) {
-            limelight.pipelineSwitch(pollen.pipeline);
+        if (camera.isConnected() && running) {
+            camera.switchPipeline(pollen.pipeline);
         }
     }
 
@@ -157,51 +151,45 @@ public class PollenVision {
     public void update() {
         long now = System.nanoTime();
         decay(now);
-        if (limelight == null || !running) {
+        if (!camera.isConnected() || !running) {
             return;
         }
 
-        LLResult result = limelight.getLatestResult();
-        if (result == null || !result.isValid()) {
+        PollenCamera.Frame frame = camera.latest();
+        if (frame == null) {
             return;
         }
-        reportedPipeline = result.getPipelineIndex();
+        reportedPipeline = frame.pipelineIndex;
         if (reportedPipeline != target.pipeline) {
             // still switching pipelines: those blobs are the wrong colour
             return;
         }
-        if (result.getTimestamp() == lastFrameTimestamp) {
+        if (frame.timestamp == lastFrameTimestamp) {
             return; // already used this frame
         }
-        if (result.getStaleness() > MAX_STALENESS_MS) {
+        if (frame.stalenessMs > MAX_STALENESS_MS) {
             return;
         }
-        lastFrameTimestamp = result.getTimestamp();
+        lastFrameTimestamp = frame.timestamp;
         lastFrameNs = now;
         framesUsed++;
 
         // pose when the image was captured: now, minus how long ago the result arrived
-        // (staleness, wall clock ms), minus the camera's own capture + processing latency.
-        // (LLResult's control hub timestamp is on the wall clock, not System.nanoTime().)
-        double latencyMs = result.getCaptureLatency() + result.getTargetingLatency();
-        long captureNs = now - result.getStaleness() * 1_000_000L - (long) (latencyMs * 1e6);
+        // (staleness, wall clock ms), minus the camera's own capture + processing latency
+        long captureNs = now - frame.stalenessMs * 1_000_000L - (long) (frame.latencyMs * 1e6);
         Pose robot = poseHistory.poseAt(captureNs);
 
-        List<LLResultTypes.ColorResult> blobs = result.getColorResults();
-        lastBlobCount = blobs == null ? 0 : blobs.size();
+        lastBlobCount = frame.blobs.size();
         lastUsedCount = 0;
-        if (blobs == null) {
-            return;
-        }
-        for (LLResultTypes.ColorResult blob : blobs) {
-            if (blob.getTargetArea() < MIN_BLOB_AREA) {
+        for (PollenCamera.Blob blob : frame.blobs) {
+            if (blob.area < MIN_BLOB_AREA) {
                 continue;
             }
-            Pose point = project(robot, blob.getTargetXDegrees(), blob.getTargetYDegrees());
+            Pose point = project(robot, blob.txDeg, blob.tyDeg);
             if (point == null) {
                 continue;
             }
-            merge(point.x(), point.y(), blob.getTargetArea(), now);
+            merge(point.x(), point.y(), blob.area, now);
             lastUsedCount++;
         }
         prune();
@@ -364,7 +352,7 @@ public class PollenVision {
     }
 
     public boolean isConnected() {
-        return connected && limelight != null;
+        return camera.isConnected();
     }
 
     public boolean isRunning() {
@@ -385,7 +373,7 @@ public class PollenVision {
     }
 
     public void addTelemetry(Telemetry telemetry) {
-        if (limelight == null) {
+        if (!camera.isConnected()) {
             telemetry.addData("Pollen", "NO LIMELIGHT in configuration (\"%s\")", NAME);
             return;
         }
