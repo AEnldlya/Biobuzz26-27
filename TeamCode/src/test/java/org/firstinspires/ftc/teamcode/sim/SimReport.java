@@ -91,7 +91,7 @@ public class SimReport {
         for (int i = 0; i < world.shots.size(); i++) {
             SimWorld.Shot s = world.shots.get(i);
             if (i > 0) data.append(',');
-            data.append(String.format(Locale.US, "[%.2f,%.1f,%.1f,%s,%.1f,%.0f]", s.timeS, s.landX, s.landY, s.scored, s.missIn, s.rpm));
+            data.append(String.format(Locale.US, "[%.2f,%.1f,%.1f,%s,%.1f,%.0f,%.0f]", s.timeS, s.landX, s.landY, s.scored, s.missIn, s.rpm, s.distanceIn));
         }
         data.append("],\"frames\":[");
         for (int i = 0; i < frames.size(); i++) {
@@ -140,7 +140,7 @@ public class SimReport {
             + "  DATA.pollen.forEach((p,j)=>{ if(f.c[j]) return; ctx.fillStyle = p[2]=='PURPLE'?'#b6f':(p[2]=='GREEN'?'#6f6':'#fd5'); ctx.beginPath(); ctx.arc(fx(p[0]),fy(p[1]),2.5*S,0,7); ctx.fill(); });\n"
             + "  ctx.strokeStyle='#5af'; ctx.lineWidth=1; ctx.beginPath(); for(let k=0;k<=i;k++){const g=DATA.frames[k]; if(k==0) ctx.moveTo(fx(g.x),fy(g.y)); else ctx.lineTo(fx(g.x),fy(g.y));} ctx.stroke();\n"
             + "  DATA.shots.forEach(s=>{ if(s[0]>f.t) return; ctx.fillStyle = s[3]?'#3f3':'#f33'; ctx.beginPath(); ctx.arc(fx(s[1]),fy(s[2]),1.5*S,0,7); ctx.fill(); });\n"
-            + "  ctx.save(); ctx.translate(fx(f.x),fy(f.y)); ctx.rotate(-f.h); ctx.fillStyle='#ccc'; ctx.fillRect(-9*S,-9*S,18*S,18*S); ctx.fillStyle='#f80'; ctx.fillRect(6*S,-3*S,3*S,6*S);\n"
+            + "  ctx.save(); ctx.translate(fx(f.x),fy(f.y)); ctx.rotate(-f.h); ctx.fillStyle='#ccc'; ctx.fillRect(-6*S,-6*S,12*S,12*S); ctx.fillStyle='#f80'; ctx.fillRect(4*S,-3*S,2*S,6*S);\n"
             + "  ctx.rotate(f.aim*Math.PI/180); ctx.strokeStyle='#ff0'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(60*S,0); ctx.stroke();\n"
             + "  ctx.rotate((f.tu-f.aim)*Math.PI/180); ctx.strokeStyle='#f00'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(24*S,0); ctx.stroke(); ctx.restore();\n"
             + "  let err=f.tu-f.aim; err=((err+180)%360+360)%360-180;\n"
@@ -148,7 +148,7 @@ public class SimReport {
             + "  document.getElementById('label').textContent = f.l;\n"
             + "  document.getElementById('stats').innerHTML = 'pose ' + f.x.toFixed(1) + ', ' + f.y.toFixed(1) + ', ' + (f.h*180/Math.PI).toFixed(1) + '&deg;  speed ' + f.v.toFixed(1) + ' in/s<br>turret ' + f.tu.toFixed(1) + '&deg; / geometric bearing to CELL ' + f.aim.toFixed(1) + '&deg; (diff ' + err.toFixed(2) + '&deg;; while driving the turret leads the CELL on purpose, see Turret.LEAD_GAIN)<br>balls in robot ' + f.b + '  shots ' + f.s + '  scored ' + f.sc;\n"
             + "  document.getElementById('tel').textContent = f.tel;\n"
-            + "  document.getElementById('shots').textContent = DATA.shots.filter(s=>s[0]<=f.t).map(s=>s[0].toFixed(2)+' s  '+(s[3]?'SCORED':'miss  ')+' by '+s[4].toFixed(1)+' in at '+s[5]+' rpm').join('\\n');\n"
+            + "  document.getElementById('shots').textContent = DATA.shots.filter(s=>s[0]<=f.t).map(s=>s[0].toFixed(2)+' s  '+(s[3]?'SCORED':'miss  ')+' '+s[4].toFixed(1)+' in from opening centre, '+s[5]+' rpm from '+s[6]+' in').join('\\n');\n"
             + "}\n"
             + "let playing=false, idx=0, last=0;\n"
             + "slider.oninput = ()=>{ idx=+slider.value; draw(idx); };\n"

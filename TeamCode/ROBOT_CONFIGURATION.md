@@ -99,10 +99,39 @@ drops. Servo positions are `BLOCKER_ENGAGED` / `BLOCKER_RELEASED`.
 ## Shooter
 
 - Flywheel power = voltage-compensated feedforward (`kV * RPM + kS`) plus PI; full power when
-  far below target to recover after a ball. `ShotTable` maps distance to RPM, hood and time of
-  flight and is a starting guess: fill it in with `Shot Tuner`.
+  far below target to recover after a ball.
 - If neither flywheel encoder is live the shooter runs on feedforward alone and telemetry says
   so.
+
+### Shot physics and the RPM regression (`Ballistics.java`, `ShotTable.java`)
+
+The shot table is not hand-typed: it is generated from physics when the code loads.
+
+- **Flywheel to ball.** One wheel against a fixed hood: no-slip exit speed is half the wheel
+  surface speed. Grip depends on compression, `1 - exp(-COMPRESSION_MM / FULL_GRIP_COMPRESSION_MM)`;
+  at the design compression of **4 mm** that is 74 % of ideal, so exit speed = 0.37 × surface
+  speed. `EFFICIENCY_TRIM` (measured / predicted) is the one number to fit on the robot from a
+  chronograph or one calibrated distance.
+- **Flight.** Point mass with gravity and quadratic air drag (5 in, 75 g ball, Cd 0.47),
+  integrated in 2 ms steps from `LAUNCH_HEIGHT_IN`.
+- **Hood.** The opening is tipped toward the shooter, so the ball must arrive descending. The
+  exit angle follows the lob geometry `tan(exit) = 2h/d + tan(ENTRY_ANGLE_DEG)` (h = opening
+  height above the launch, d = distance): near-vertical up close, flatter far away, clamped to
+  the hood's range. Servo position comes from a two-point calibration
+  (`HOOD_SERVO_AT_MIN_ANGLE` / `HOOD_SERVO_AT_MAX_ANGLE` at `HOOD_MIN_ANGLE_DEG` /
+  `HOOD_MAX_ANGLE_DEG`).
+- **Table.** For every distance from 24 to 144 in (6 in steps) the solver finds the exit speed
+  that drops the ball *down* through the CELL opening (59.5 in) and converts it to RPM, plus
+  time of flight for the turret's shoot-on-the-move lead.
+- **Regression.** The RPM samples are fit with a cubic, `rpm = c0 + c1 d + c2 d² + c3 d³`,
+  which `ShotTable.rpm()` uses (`USE_REGRESSION`). `ShotTable.describe()` prints the table,
+  the coefficients and the fit error; the simulator's `ShootingPhysicsTest` does too.
+- **CELL opening.** `Field.CELL_TILT_DEG` (30°) and `CELL_OPENING_RADIUS_IN` (placeholder 7 in,
+  the radius the ball centre can pass) define the target the simulator scores against.
+
+To tune on the robot: measure the ball, wheel, launch height and hood calibration into
+`Ballistics`, then shoot from one known distance and adjust `EFFICIENCY_TRIM` until it drops
+in; `ShotTable.regenerate()` (or a restart) rebuilds everything.
 
 ## Limelight pollen seeking (AUTO)
 
@@ -154,10 +183,11 @@ matching CSVs.
 | `AutoSimTest` | `RED AUTO` and `BLUE AUTO` end to end: preload volley scores, camera picks the biggest purple pile and ignores green, intake collects it, second volley, park |
 | `TurretTrackingSimTest` | turret stays on the CELL while the robot spins and drives; a glitching position wire is flagged and ignored |
 | `PollenVisionSimTest` | the pollen finder places a pile within an inch or two of where it is |
+| `ShootingPhysicsTest` | the generated table and its regression drop balls into the CELL from 24 to 132 in; 20 % slow or 25 % fast misses |
 
 Models: `SimRobot` (mecanum velocity lag, brake, odometry noise), `SimTurret` (two CR servos
 with dead zone and lag, two analog wires with noise and wrap), `SimShooter` (flywheel lag,
-RPM drop per ball, ShotTable inverted for range), `SimCamera` (Limelight FOV, frame rate,
+RPM drop per ball; shots fly in 3D through `Ballistics` into the tilted CELL opening), `SimCamera` (Limelight FOV, frame rate,
 latency, pipeline switch time), and ball handling in `SimWorld`. The robot code is swapped
 onto the models only through `Constants.localizerFactory` / `drivetrainFactory` and
 `PollenVision.CAMERA_FACTORY`.

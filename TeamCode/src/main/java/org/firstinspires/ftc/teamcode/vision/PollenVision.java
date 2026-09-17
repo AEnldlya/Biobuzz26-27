@@ -42,7 +42,7 @@ public class PollenVision {
     public static int POLL_RATE_HZ = 60;
 
     // ---- camera mount, all relative to the robot's odometry tracking centre ----
-    public static double CAMERA_FORWARD_IN = 7.0;   // + = toward the robot's front
+    public static double CAMERA_FORWARD_IN = 5.5;   // + = toward the robot's front (12 in robot)
     public static double CAMERA_LEFT_IN = 0.0;      // + = toward the robot's left
     public static double CAMERA_HEIGHT_IN = 11.0;   // lens centre above the tiles
     public static double CAMERA_PITCH_DEG = 22.0;   // tilt DOWN from horizontal (+ = down)

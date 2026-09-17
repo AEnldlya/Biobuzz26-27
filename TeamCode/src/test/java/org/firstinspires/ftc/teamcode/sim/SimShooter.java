@@ -1,15 +1,14 @@
 package org.firstinspires.ftc.teamcode.sim;
 
 import org.firstinspires.ftc.teamcode.Shooter;
-import org.firstinspires.ftc.teamcode.ShotTable;
 
 /**
  * Flywheel: two motors on one wheel. Free speed is power * 6000 RPM scaled by battery
  * voltage, the wheel follows it with a first-order lag, and each ball through it costs
  * rpmDropPerBall. The encoders report ticks per second at Shooter.TICKS_PER_REV.
  *
- * Range: the ShotTable is treated as truth (an RPM lands a ball at the distance the table maps
- * to it), so a shot is on range when the flywheel was at the table speed for the real distance.
+ * Where a ball goes is SimWorld's job (Ballistics: exit speed from RPM and compression, then a
+ * drag-and-gravity flight into the CELL opening).
  */
 public class SimShooter {
     public double freeRpmPerPowerAt12_5V = 6000.0;
@@ -59,20 +58,8 @@ public class SimShooter {
         rpm = Math.max(0.0, rpm - rpmDropPerBall);
     }
 
-    /** Distance the current flywheel speed carries a ball, by inverting ShotTable.RPM. */
-    public double rangeForRpm(double rpmNow) {
-        double[] d = ShotTable.DISTANCE_IN;
-        double[] r = ShotTable.RPM;
-        if (rpmNow <= r[0]) {
-            return d[0] * rpmNow / r[0];
-        }
-        for (int i = 1; i < r.length; i++) {
-            if (rpmNow <= r[i]) {
-                double t = (rpmNow - r[i - 1]) / (r[i] - r[i - 1]);
-                return d[i - 1] + t * (d[i] - d[i - 1]);
-            }
-        }
-        int last = r.length - 1;
-        return d[last] + (rpmNow - r[last]) / (r[last] - r[last - 1]) * (d[last] - d[last - 1]);
+    /** tests: put the wheel at a speed instantly */
+    public void setRpm(double rpm) {
+        this.rpm = rpm;
     }
 }

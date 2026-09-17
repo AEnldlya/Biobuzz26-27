@@ -34,6 +34,14 @@ public final class Field {
     public static double CELL_AIM_OFFSET = 15.0;
     // the upward CELL opening spans 53.5 to 65.6 in above the TILES
     public static final double CELL_OPENING_HEIGHT_IN = 59.5;
+    /** the up-CELL is tipped this far from horizontal, its opening facing the shooting side */
+    public static double CELL_TILT_DEG = 30.0;
+    /** PLACEHOLDER: how far from the opening centre a ball's CENTRE can pass and still drop in */
+    public static double CELL_OPENING_RADIUS_IN = 7.0;
+
+    /** the robot is a 12 x 12 in square; odometry centre at its middle */
+    public static double ROBOT_SIZE_IN = 12.0;
+    public static double ROBOT_HALF_IN = ROBOT_SIZE_IN / 2.0;
 
     // PLACEHOLDER: measure your real red start. G304: on the red half, touching a wall.
     public static Pose RED_START = new Pose(48, 9, Math.toRadians(90));
@@ -68,6 +76,18 @@ public final class Field {
         double x = alliance == Alliance.RED ? CENTER - HIVE_HALF_SPACING : CENTER + HIVE_HALF_SPACING;
         double y = upCell == CellSide.FAR ? CENTER + CELL_AIM_OFFSET : CENTER - CELL_AIM_OFFSET;
         return new Pose(x, y);
+    }
+
+    /**
+     * Unit normal (x, y, z) of the up-CELL opening plane, pointing out toward the side shots
+     * come from: tipped CELL_TILT_DEG from vertical toward the audience (AUDIENCE cell) or away
+     * from it (FAR cell). A ball scores when it crosses this plane against the normal inside
+     * CELL_OPENING_RADIUS_IN of cellAimPoint at CELL_OPENING_HEIGHT_IN.
+     */
+    public static double[] cellOpeningNormal(CellSide upCell) {
+        double tilt = Math.toRadians(CELL_TILT_DEG);
+        double y = upCell == CellSide.FAR ? Math.sin(tilt) : -Math.sin(tilt);
+        return new double[] {0.0, y, Math.cos(tilt)};
     }
 
     /**

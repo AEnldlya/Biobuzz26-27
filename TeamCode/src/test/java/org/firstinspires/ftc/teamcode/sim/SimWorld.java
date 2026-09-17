@@ -7,9 +7,9 @@ import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.teamcode.Alliance;
+import org.firstinspires.ftc.teamcode.Ballistics;
 import org.firstinspires.ftc.teamcode.Field;
 import org.firstinspires.ftc.teamcode.Intake;
-import org.firstinspires.ftc.teamcode.ShotTable;
 import org.firstinspires.ftc.teamcode.Turret;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.vision.Pollen;
@@ -25,10 +25,12 @@ import java.util.List;
  *
  * Ball handling follows the intake rules: the intake and transfer motors running with the
  * blocker engaged collects pollen that is in front of the intake; the same motors running
- * with the blocker released feeds one ball into the flywheel every shotIntervalS. A shot lands
- * at the range the flywheel speed gives (ShotTable inverted), in the direction the turret is
- * really pointing, carried by the robot's own velocity; it scores if it lands inside
- * cellScoreRadiusIn of the up-CELL aim point.
+ * with the blocker released feeds one ball into the flywheel every shotIntervalS. A shot
+ * leaves at the exit speed the flywheel RPM gives (Ballistics: wheel surface speed times the
+ * compression-dependent transfer ratio), at the hood's exit angle, in the direction the turret
+ * is really pointing, plus the robot's own velocity, from LAUNCH_HEIGHT_IN at the turret
+ * pivot; it then flies under gravity and air drag. It scores when it crosses the up-CELL's
+ * tilted opening plane (Field.cellOpeningNormal) inside Field.CELL_OPENING_RADIUS_IN.
  *
  * Constants.localizerFactory / drivetrainFactory and PollenVision.CAMERA_FACTORY are pointed
  * at the models, so the real OpModes run unmodified.
@@ -50,10 +52,13 @@ public class SimWorld {
     public static class Shot {
         public double timeS;
         public double rpm;
+        public double exitSpeedInS;
+        public double exitAngleDeg;
         public double turretDeg;
         public double trueAimDeg;
-        public double rangeIn;
-        public double landX, landY;
+        public double distanceIn;
+        /** where the ball crossed the opening plane (or came closest to the opening centre) */
+        public double landX, landY, landZ;
         public double missIn;
         public boolean scored;
         public boolean dribbled;
@@ -85,10 +90,10 @@ public class SimWorld {
     public int ballsCollected = 0;
     public int ballsScored = 0;
     public int maxBalls = 3;
-    public double intakeMouthForwardIn = 9.0;
+    /** the intake mouth is at the front edge of the 12 in robot */
+    public double intakeMouthForwardIn = Field.ROBOT_HALF_IN + 1.0;
     public double intakeReachIn = 8.0;
     public double intakeHalfAngleDeg = 50.0;
-    public double cellScoreRadiusIn = 8.0;
     public double shotIntervalS = 0.3;
     public double minShotRpm = 900.0;
 
@@ -211,30 +216,80 @@ public class SimWorld {
         shot.turretDeg = turret.ringDeg();
         shot.trueAimDeg = trueAimDeg();
         ballsInRobot--;
+        shooter.ballThrough();
 
         double heading = pose.heading();
         double pivotX = pose.x() + Turret.PIVOT_FORWARD_IN * Math.cos(heading) - Turret.PIVOT_LEFT_IN * Math.sin(heading);
         double pivotY = pose.y() + Turret.PIVOT_FORWARD_IN * Math.sin(heading) + Turret.PIVOT_LEFT_IN * Math.cos(heading);
         Pose cell = Field.cellAimPoint(alliance, upCell);
-
+        shot.distanceIn = Math.hypot(cell.x() - pivotX, cell.y() - pivotY);
+        shot.exitAngleDeg = Ballistics.hoodAngleForServo(hood.getPosition());
         if (shot.rpm < minShotRpm) {
             shot.dribbled = true;
-            shot.rangeIn = 6.0;
-        } else {
-            shot.rangeIn = shooter.rangeForRpm(shot.rpm);
         }
-        double direction = heading - Math.toRadians(shot.turretDeg);
+        shot.exitSpeedInS = shot.dribbled ? 30.0 : Ballistics.exitSpeedInS(shot.rpm);
+
         Velocity v = robot.trueFieldVelocity();
-        double flight = ShotTable.timeOfFlight(shot.rangeIn);
-        shot.landX = pivotX + shot.rangeIn * Math.cos(direction) + v.vx * flight;
-        shot.landY = pivotY + shot.rangeIn * Math.sin(direction) + v.vy * flight;
-        shot.missIn = Math.hypot(shot.landX - cell.x(), shot.landY - cell.y());
-        shot.scored = !shot.dribbled && shot.missIn <= cellScoreRadiusIn;
+        flyIntoCell(shot, pivotX, pivotY, heading - Math.toRadians(shot.turretDeg), v.vx, v.vy, cell);
         if (shot.scored) {
             ballsScored++;
         }
-        shooter.ballThrough();
         shots.add(shot);
+    }
+
+    /**
+     * Fly the ball in 3D: the 2D drag trajectory along the launch bearing, plus the robot's
+     * velocity carried along, and test each step against the tilted opening plane.
+     */
+    void flyIntoCell(Shot shot, double x0, double y0, double bearing, double vx, double vy, Pose cell) {
+        Ballistics.Flight f = Ballistics.fly(shot.exitSpeedInS, shot.exitAngleDeg, Ballistics.LAUNCH_HEIGHT_IN, 400.0);
+        double[] n = Field.cellOpeningNormal(upCell);
+        double cx = cell.x(), cy = cell.y(), cz = Field.CELL_OPENING_HEIGHT_IN;
+        double cosB = Math.cos(bearing), sinB = Math.sin(bearing);
+        double best = Double.MAX_VALUE;
+        double prevSide = Double.NaN, px = 0, py = 0, pz = 0;
+        shot.scored = false;
+        for (int i = 0; i < f.n; i++) {
+            double x = x0 + f.x[i] * cosB + vx * f.t[i];
+            double y = y0 + f.x[i] * sinB + vy * f.t[i];
+            double z = Ballistics.LAUNCH_HEIGHT_IN + f.z[i];
+            double side = n[0] * (x - cx) + n[1] * (y - cy) + n[2] * (z - cz);
+            double dist = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
+            if (dist < best) {
+                best = dist;
+                shot.landX = x;
+                shot.landY = y;
+                shot.landZ = z;
+                shot.missIn = dist;
+            }
+            if (i > 0 && prevSide > 0 && side <= 0) {
+                // crossed the opening plane going in: where?
+                double fr = prevSide / (prevSide - side);
+                double ix = px + fr * (x - px), iy = py + fr * (y - py), iz = pz + fr * (z - pz);
+                double inPlane = Math.sqrt((ix - cx) * (ix - cx) + (iy - cy) * (iy - cy) + (iz - cz) * (iz - cz));
+                shot.landX = ix;
+                shot.landY = iy;
+                shot.landZ = iz;
+                shot.missIn = inPlane;
+                shot.scored = !shot.dribbled && inPlane <= Field.CELL_OPENING_RADIUS_IN;
+                return;
+            }
+            prevSide = side;
+            px = x;
+            py = y;
+            pz = z;
+        }
+    }
+
+    /** Tests: fire one ball right now from wherever the robot is, with the wheel at rpm. */
+    public Shot testShot(double rpm) {
+        shooter.setRpm(rpm);
+        int before = shots.size();
+        int balls = ballsInRobot;
+        ballsInRobot = Math.max(1, balls);
+        fire(robot.truePose());
+        ballsInRobot = balls;
+        return shots.get(before);
     }
 
     /** The exact turret angle (deg, positive right) that points at the up-CELL from the true pose. */
