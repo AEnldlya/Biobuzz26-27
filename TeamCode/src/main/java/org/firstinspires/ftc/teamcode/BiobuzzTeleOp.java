@@ -6,6 +6,7 @@ import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
 import org.firstinspires.ftc.teamcode.pedro.Constants;
+import org.firstinspires.ftc.teamcode.pedro.FusedPinpointLocalizer;
 
 /**
  * Gamepad 1
@@ -234,6 +235,10 @@ public class BiobuzzTeleOp extends OpMode {
         boolean openingSide = Field.isOnOpeningSide(pose, turret.getUpCell());
         telemetry.addData("Alliance", "%s %s", alliance, openingSide ? "" : "  WRONG SIDE OF HIVE");
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        FusedPinpointLocalizer localizer = Constants.fusedLocalizer(follower);
+        if (localizer != null && localizer.usingImuFallback()) {
+            telemetry.addData("Localizer", "PINPOINT %s - heading from hub IMU, position frozen", localizer.status());
+        }
         turret.addTelemetry(telemetry);
         shooter.addTelemetry(telemetry);
         telemetry.addData("RPM trim", "%+.0f", rpmTrim);

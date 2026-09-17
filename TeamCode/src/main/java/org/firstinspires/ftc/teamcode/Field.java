@@ -38,6 +38,20 @@ public final class Field {
     // PLACEHOLDER: measure your real red start. G304: on the red half, touching a wall.
     public static Pose RED_START = new Pose(48, 9, Math.toRadians(90));
 
+    // ---- AUTO waypoints, written for RED; Alliance.fromRed() mirrors them for BLUE ----
+    // PLACEHOLDERS until the field is measured. All must be on the opening side of the
+    // starting up-CELL (red starts with the AUDIENCE cell up, so y < CENTER while shooting).
+    /** where the robot stops to shoot; the turret aims itself, heading just has to be sane */
+    public static Pose RED_SCORE = new Pose(40, 40, Math.toRadians(90));
+    /** where the robot stops and looks for pollen with the Limelight */
+    public static Pose RED_SCAN = new Pose(24, 44, Math.toRadians(90));
+    /** used when the camera sees nothing: drive here and intake anyway */
+    public static Pose RED_PICKUP_FALLBACK = new Pose(24, 60, Math.toRadians(90));
+    public static Pose RED_PARK = new Pose(14, 14, Math.toRadians(90));
+
+    /** furthest from RED_SCAN the auto will chase pollen (keeps it out of the other alliance) */
+    public static double MAX_POLLEN_CHASE_IN = 48.0;
+
     private Field() {
     }
 

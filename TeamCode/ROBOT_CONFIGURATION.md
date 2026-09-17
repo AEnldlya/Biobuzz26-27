@@ -1,77 +1,104 @@
 # Robot Configuration
 
-This file records the Robot Controller hardware names expected by the active `states` OpModes after the archive, auto-speed, and turret updates.
+Hardware names the BIOBUZZ OpModes expect, and how the main subsystems fit together.
 
-## Active OpModes
+## OpModes on the Driver Station
 
-Only the OpModes in `org.firstinspires.ftc.teamcode.states` should appear on the Driver Station:
+| Name | Group | What it is |
+| --- | --- | --- |
+| `RED AUTO` / `BLUE AUTO` | Biobuzz | Full autonomous (`AutoBase`): preload shot, Limelight pollen seek + intake, return + shoot, park |
+| `Biobuzz TeleOp` | Biobuzz | Match TeleOp; picks up the pose / turret angle / HIVE state saved by AUTO |
+| `Shot Tuner` | Tuning | Builds `ShotTable` and tunes turret / shooter gains live |
+| `Pollen Vision Test` | Tuning | Checks the Limelight floor projection against a real pollen piece |
+| AutoTune (browser) | Tuning | Pedro AutoTune procedures in `pedro/Tuning.java`, at http://192.168.43.1:10158 |
 
-- `Blue TeleOp States`
-- `Red TeleOp States`
-- `Blue CLOSE AUTO STATE`
-- `BLUE FAR AUTO STATE`
-- `RED CLOSE AUTO STATE`
-- `RED FAR AUTO STATE`
-
-All other OpModes were moved under `org.firstinspires.ftc.teamcode.archive` and disabled.
-
-## Hardware Names
-
-Configure these names in the Robot Controller configuration:
+## Hardware names
 
 | Name | Type | Used by |
 | --- | --- | --- |
-| `frontLeftMotor` | DC motor | TeleOp drive |
-| `frontRightMotor` | DC motor | TeleOp drive |
-| `backLeftMotor` | DC motor | TeleOp drive |
-| `backRightMotor` | DC motor | TeleOp drive |
-| `intakeMotor` | DC motor | Intake / claw subsystem |
-| `shooterMotor` | DC motor with encoder capability (`DcMotorEx`) | Shooter output and RPM feedback |
-| `shooterMotor2` | DC motor with encoder capability (`DcMotorEx`) | Shooter output and RPM feedback |
-| `turretMotor` | DC motor with encoder capability (`DcMotorEx`) | Turret rotation |
-| `turretEncoder` | Analog input | Turret absolute angle feedback |
-| `rotateServo` | Servo | TeleOp mechanism |
-| `blockServo` | Servo | Blocker / claw subsystem |
-| `aimServo` | Servo | Shooter aim |
-| `pinpoint` | GoBilda Pinpoint | Odometry / heading |
-| `limelight` | Limelight 3A | AprilTag targeting and far-zone ball lane selection |
+| `frontLeftMotor` | DC motor | Drive |
+| `frontRightMotor` | DC motor with encoder | Drive. **The turret encoder cable is plugged into this motor's encoder port** (`Turret.ENCODER_PORT_NAME`) |
+| `backLeftMotor` | DC motor | Drive |
+| `backRightMotor` | DC motor | Drive |
+| `turretMotor` | DC motor (`DcMotorEx`) | Turret rotation, goBILDA 117 RPM (1425.1 ticks/rev) through 2.59375:1 |
+| `intakeMotor` | DC motor | Intake (`Claw`) |
+| `shooterMotor`, `shooterMotor2` | DC motors with encoders | Flywheel; RPM feedback averages both encoders |
+| `aimServo` | Servo | Shooter hood |
+| `blockServo` | Servo | Blocker between intake and flywheel |
+| `pinpoint` | goBILDA Pinpoint (I2C) | Odometry: two dead wheels + the Pinpoint's IMU |
+| `imu` | Control Hub IMU (built in) | Heading backstop if the Pinpoint faults (`FusedPinpointLocalizer`) |
+| `limelight` | Limelight 3A | Pollen colour blobs in AUTO (`vision/PollenVision`) |
 
-## Turret Notes
+## Localization (dead wheels + IMU)
 
-- The turret actuator is now `turretMotor`, not `turretServo`.
-- Turret angle comes from the dedicated analog input named `turretEncoder`.
-- The active turret code enforces a software hard limit from `-150` to `+150` degrees relative to the turret's starting position.
-- `turretMotor` is set to `RUN_WITHOUT_ENCODER` with `BRAKE` zero-power behavior.
-- If the turret tracks in the wrong direction, reverse the sign of the turret encoder integration in `SetTurretWithIMU` before tuning PID constants.
-- If the turret motor moves the wrong direction, reverse `turretMotor` in the Robot Controller configuration before tuning PID constants.
-- Current turret gear ratio passed by active states: `2.59375`.
+`pedro/Constants.java` builds the Pedro Follower from three custom pieces:
 
-## Shooter Notes
+- `FusedPinpointLocalizer` wraps Pedro's Pinpoint localizer. The Pinpoint fuses its two dead
+  wheels with its own IMU, so the pose and heading the turret uses come from dead wheels + IMU.
+  The Control Hub IMU is read every 100 ms only to track the constant offset between the two
+  headings; if the Pinpoint reports a fault (pod unplugged, IMU runaway, bad read) the heading
+  switches to hub IMU + offset and the position freezes at the last good value, so the turret
+  keeps tracking the goal. It also keeps 1.5 s of pose history so Limelight detections are
+  placed with the pose from when the frame was captured.
+- `CompensatedDrivetrain` is the stock mecanum drivetrain with battery voltage compensation
+  (`Battery.NOMINAL_VOLTAGE` / measured, capped at 0.85 to 1.2).
+- `PathProfiles` are per-path Foresight overrides: score (stop precisely), transit (fast),
+  pickup (60 % speed, no brake at end), park.
 
-- Both shooter motors are still powered together.
-- Distance-based shooter targets use the old regression: `RPM = distance * 0.010472 + 3561.36`.
-- Shooter RPM feedback averages `shooterMotor.getVelocity()` and `shooterMotor2.getVelocity()` when both encoders are usable.
-- If only one shooter encoder is usable, feedback falls back to that encoder. If both are present, Driver Station telemetry shows each motor's RPM separately.
-- If neither shooter encoder is live, shooter control uses direct motor power. The default no-encoder shooter power is `0.7`, and D-pad up/down in TeleOp adjusts it.
+Set `FusedPinpointLocalizer.LOGO_FACING` / `USB_FACING` to how the Control Hub is mounted; they
+only matter for the fallback heading.
 
-## Far-Zone Ball Targeting
+## Turret
 
-- Far autos use Limelight pipeline `6` for AprilTag scoring and switch to pipeline `1` before each far-zone ball pickup.
-- Pipeline `1` is expected to be an object detector for purple and green balls. If detector class names include `purple` or `green`, only those named detections are counted. If class names are different, detections are treated as balls only when they pass confidence and target-area thresholds.
-- Ball detections are mapped to the closest existing pickup Y lane by comparing `DetectorResult.getTargetXDegrees()` against the expected horizontal angle from the current robot pose to each lane pose. Red lanes are approximately `4.75`, `24`, and `42`; blue lanes are approximately `-4.75`, `-24`, and `-42`.
-- If no usable detections are available, or if lanes tie, the auto falls back to the existing cycle lane.
-- Driver Station telemetry reports the active ball pipeline, selected lane, raw and usable detection counts, lane counts, and the latest detector sample.
+- Field-relative aim from odometry only, no camera. Angles are degrees from robot forward,
+  positive = right. The turret must face forward when an OpMode inits unless the angle was
+  handed over from AUTO through `RobotState`.
+- Software limits `Turret.MIN_ANGLE_DEG` / `MAX_ANGLE_DEG` (±180). The turret pins at a limit
+  instead of swinging 360° when the goal is just past it.
+- PIDF with velocity feedforward: the turret cancels the robot's own spin and drive so it stays
+  locked on while moving, and leads the shot by the ball's time of flight (`Turret.LEAD_GAIN`,
+  `ShotTable.TIME_OF_FLIGHT_S`).
+- Settle hysteresis: it stops commanding inside `DEADBAND_DEG` and only re-engages past
+  `UNSETTLE_DEG`, so it does not buzz on target.
+- If the turret tracks the wrong way, flip `Turret.ENCODER_DIRECTION`; if the motor drives the
+  wrong way, flip `Turret.POWER_DIRECTION`. Do that before touching the gains.
+- `Turret.PIVOT_FORWARD_IN` / `PIVOT_LEFT_IN`: turret pivot relative to the odometry centre.
 
-## Autonomous Speed Notes
+## Shooter
 
-The four active autonomous state files use two Pedro path-end profiles:
+- Flywheel power = voltage-compensated feedforward (`kV * RPM + kS`) plus PI; full power when
+  far below target to recover after a ball. `ShotTable` maps distance to RPM, hood and time of
+  flight and is a starting guess: fill it in with `Shot Tuner`.
+- If neither flywheel encoder is live the shooter runs on feedforward alone and telemetry says
+  so.
 
-- Score paths: velocity `5.0`, translational error `1.5`, heading error `Math.toRadians(3)`, timeout `0.75`
-- Transit / pickup / park paths: velocity `7.0`, translational error `2.0`, heading error `Math.toRadians(4)`, timeout `0.6`
-- Score path max power: `1.0`
-- Pickup path max power: `0.85`
-- Park path max power: `0.85`
+## Limelight pollen seeking (AUTO)
 
-Several fixed waits were shortened to reduce dead time while keeping settle/release gates in place, and pickup/scoring path launches now go through helper methods so power caps are applied consistently on every cycle.
+- Build one **Color** pipeline per pollen colour on the Limelight web UI and put its index in
+  `vision/Pollen.java` (defaults: PURPLE 1, GREEN 2, YELLOW 3; rename to the real colours).
+  Raise "max targets" so every blob is reported.
+- `PollenVision` projects each blob to the floor from the camera mount
+  (`CAMERA_FORWARD_IN`, `CAMERA_LEFT_IN`, `CAMERA_HEIGHT_IN`, `CAMERA_PITCH_DEG`,
+  `CAMERA_YAW_DEG`, `POLLEN_HEIGHT_IN`), places it on the field with the capture-time pose,
+  and merges it into clusters whose weight is the accumulated blob area (decaying by half each
+  second unseen). The heaviest cluster is where the most of that pollen is.
+- `AutoBase.TARGET_POLLEN` picks the colour. After scanning, the auto drives to
+  `STANDOFF_IN` short of the heaviest cluster within `Field.MAX_POLLEN_CHASE_IN` of the scan
+  pose, turns the intake to it (`INTAKE_HEADING_OFFSET`: 0 front, π back), runs the intake and
+  pushes `PUSH_THROUGH_IN` past it. No cluster → `Field.RED_PICKUP_FALLBACK`.
+- Verify the geometry with `Pollen Vision Test` before a match.
 
-The close-side autos now start the next pickup path immediately after the post-score claw reset. Park states are active again in the autonomous state machines and route through the park speed helper instead of launching the park path directly.
+## AUTO waypoints
+
+All in `Field.java`, written for RED and mirrored for BLUE by `Alliance.fromRed()` (the field is
+point-symmetric). `RED_START`, `RED_SCORE`, `RED_SCAN`, `RED_PICKUP_FALLBACK` and `RED_PARK`
+are **placeholders** until the field is measured. Shooting spots must be on the opening side of
+the up-CELL; the auto refuses to fire from the wrong side (G417).
+
+## Tuning order
+
+1. AutoTune `1. Mecanum Directions`, `2. Pinpoint`, `3. Foresight`, paste into `Constants`.
+2. `Turret.ENCODER_DIRECTION` / `POWER_DIRECTION`, then turret gains in `Shot Tuner`.
+3. `ShotTable` rows with `Shot Tuner`.
+4. Limelight pipelines, then camera mount numbers with `Pollen Vision Test`.
+5. Field waypoints, then `PathProfiles` end constraints if paths stall or overshoot.

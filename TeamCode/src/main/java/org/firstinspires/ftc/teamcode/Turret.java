@@ -48,6 +48,9 @@ public class Turret {
     public static double MAX_I_POWER = 0.1;
     public static double MAX_POWER = 0.9;
     public static double DEADBAND_DEG = 0.4;    // settled inside this: stop commanding, no chatter
+    // once settled, stay settled until the error grows past this (hysteresis, no buzzing at
+    // the deadband edge where kS would kick the turret back and forth)
+    public static double UNSETTLE_DEG = 1.0;
     public static double ON_TARGET_DEG = 1.5;
     public static double VELOCITY_FILTER = 0.5; // weight of the newest turret velocity sample
     // when the target is only this far past a limit, stay pinned instead of swinging 360
@@ -91,6 +94,7 @@ public class Turret {
     private double trueDistanceIn = Double.NaN;
     private boolean poseValid = false;
     private boolean limited = false;
+    private boolean settled = false;
     private long lastNs;
 
     public Turret(HardwareMap hardwareMap, Battery battery) {
@@ -144,10 +148,12 @@ public class Turret {
                 break;
             case MANUAL:
                 pidf.reset();
+                settled = false;
                 applyPower(manualPower);
                 return;
             default:
                 pidf.reset();
+                settled = false;
                 applyPower(0.0);
                 return;
         }
@@ -157,7 +163,12 @@ public class Turret {
         targetRateDegPerSec = limited ? 0.0 : desiredRate;
         errorDeg = targetDeg - angleDeg;
 
-        boolean settled = Math.abs(errorDeg) < DEADBAND_DEG && Math.abs(targetRateDegPerSec) < 2.0;
+        boolean targetStill = Math.abs(targetRateDegPerSec) < 2.0;
+        if (settled) {
+            settled = targetStill && Math.abs(errorDeg) < Math.max(UNSETTLE_DEG, DEADBAND_DEG);
+        } else {
+            settled = targetStill && Math.abs(errorDeg) < DEADBAND_DEG;
+        }
         double output;
         if (settled) {
             pidf.reset();
@@ -341,6 +352,15 @@ public class Turret {
 
     public double getAngleDeg() {
         return angleDeg;
+    }
+
+    /** Field-computed aim angle before trim and limits (degrees, positive = right). */
+    public double getAimAngleDeg() {
+        return aimAngleDeg;
+    }
+
+    public boolean hasValidPose() {
+        return poseValid;
     }
 
     public double getTargetDeg() {
