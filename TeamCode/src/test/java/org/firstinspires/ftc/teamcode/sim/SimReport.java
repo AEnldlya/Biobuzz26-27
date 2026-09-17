@@ -146,7 +146,7 @@ public class SimReport {
             + "  let err=f.tu-f.aim; err=((err+180)%360+360)%360-180;\n"
             + "  document.getElementById('time').textContent = ' ' + f.t.toFixed(2) + ' s';\n"
             + "  document.getElementById('label').textContent = f.l;\n"
-            + "  document.getElementById('stats').innerHTML = 'pose ' + f.x.toFixed(1) + ', ' + f.y.toFixed(1) + ', ' + (f.h*180/Math.PI).toFixed(1) + '&deg;  speed ' + f.v.toFixed(1) + ' in/s<br>turret ' + f.tu.toFixed(1) + '&deg; / should be ' + f.aim.toFixed(1) + '&deg; (error ' + err.toFixed(2) + '&deg;)<br>balls in robot ' + f.b + '  shots ' + f.s + '  scored ' + f.sc;\n"
+            + "  document.getElementById('stats').innerHTML = 'pose ' + f.x.toFixed(1) + ', ' + f.y.toFixed(1) + ', ' + (f.h*180/Math.PI).toFixed(1) + '&deg;  speed ' + f.v.toFixed(1) + ' in/s<br>turret ' + f.tu.toFixed(1) + '&deg; / geometric bearing to CELL ' + f.aim.toFixed(1) + '&deg; (diff ' + err.toFixed(2) + '&deg;; while driving the turret leads the CELL on purpose, see Turret.LEAD_GAIN)<br>balls in robot ' + f.b + '  shots ' + f.s + '  scored ' + f.sc;\n"
             + "  document.getElementById('tel').textContent = f.tel;\n"
             + "  document.getElementById('shots').textContent = DATA.shots.filter(s=>s[0]<=f.t).map(s=>s[0].toFixed(2)+' s  '+(s[3]?'SCORED':'miss  ')+' by '+s[4].toFixed(1)+' in at '+s[5]+' rpm').join('\\n');\n"
             + "}\n"
