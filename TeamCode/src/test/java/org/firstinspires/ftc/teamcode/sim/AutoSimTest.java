@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import com.pedropathing.math.Pose;
+import com.pedropathing.utils.Angle;
 import com.qualcomm.robotcore.hardware.Gamepad;
 
 import org.firstinspires.ftc.teamcode.Alliance;
@@ -80,7 +81,9 @@ public class AutoSimTest {
             assertTrue("preload shot " + i + " should score", world.shots.get(i).scored);
         }
         for (SimWorld.Shot s : world.shots) {
-            double err = Math.abs(s.turretDeg - s.trueAimDeg);
+            // wrap the difference: a turret at -179 aiming at +179 is 2 deg off, not 358
+            double err = Math.abs(Math.toDegrees(Angle.normalizeSigned(
+                    Math.toRadians(s.turretDeg - s.trueAimDeg))));
             assertTrue("turret off target at a shot: " + err + " deg", err <= 3.0);
         }
         assertEquals("the HIVE should have tipped once", 1, world.tips);

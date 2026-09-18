@@ -59,7 +59,9 @@ public class SimRobot implements Drivetrain, Localizer, PoseHistory {
     private MotionState reported = MotionState.zero();
     private final ArrayDeque<long[]> historyTimes = new ArrayDeque<>();
     private final ArrayDeque<Pose> historyPoses = new ArrayDeque<>();
-    private final Random random = new Random(7);
+    /** odometry noise stream; change the seed to re-run the same plan against different luck */
+    public static long noiseSeed = 7;
+    private final Random random = new Random(noiseSeed);
     private long lastStepNs = 0;
     private Runnable onStep = () -> { };
     private double simTimeS = 0.0;
