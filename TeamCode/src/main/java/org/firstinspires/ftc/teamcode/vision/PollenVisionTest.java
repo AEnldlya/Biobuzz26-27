@@ -5,6 +5,7 @@ import com.pedropathing.math.Pose;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
+import org.firstinspires.ftc.teamcode.Alliance;
 import org.firstinspires.ftc.teamcode.Field;
 import org.firstinspires.ftc.teamcode.Hubs;
 import org.firstinspires.ftc.teamcode.RobotState;
@@ -32,16 +33,38 @@ public class PollenVisionTest extends OpMode {
     private PollenVision vision;
     private GamePiece[] pollens = GamePiece.values();
     private int pollenIndex = 0;
+    private Alliance alliance;
 
     @Override
     public void init() {
         hubs = new Hubs(hardwareMap);
         follower = Constants.create(hardwareMap);
         localizer = Constants.fusedLocalizer(follower);
-        follower.setPose(Field.startPose(RobotState.alliance));
+        alliance = RobotState.alliance;
+        follower.setPose(Field.startPose(alliance));
         vision = new PollenVision(hardwareMap, Constants.poseHistory(follower));
         vision.setTarget(pollens[pollenIndex]);
-        telemetry.addData("Limelight", vision.isConnected() ? "found" : "NOT FOUND");
+    }
+
+    @Override
+    public void init_loop() {
+        hubs.clearCache();
+        // the field frame is anchored to the alliance start pose, so a cluster's reported
+        // coordinates only mean anything once this matches the wall the robot is against
+        if (gamepad1.xWasPressed()) {
+            alliance = Alliance.BLUE;
+            follower.setPose(Field.startPose(alliance));
+        }
+        if (gamepad1.bWasPressed()) {
+            alliance = Alliance.RED;
+            follower.setPose(Field.startPose(alliance));
+        }
+        follower.update();
+        Pose pose = follower.pose();
+        telemetry.addData("Alliance", "%s   (gamepad 1: X blue, B red)", alliance);
+        telemetry.addData("Limelight", vision.isConnected() ? "found, " + pollens[pollenIndex] : "NOT FOUND");
+        telemetry.addData("Start pose", "put the robot on the %s wall start spot: x %.1f  y %.1f",
+                alliance, pose.x(), pose.y());
         telemetry.update();
     }
 
@@ -69,10 +92,11 @@ public class PollenVisionTest extends OpMode {
             vision.clear();
         }
         if (gamepad1.yWasPressed()) {
-            follower.setPose(Field.startPose(RobotState.alliance));
+            follower.setPose(Field.startPose(alliance));
         }
 
         Pose pose = follower.pose();
+        telemetry.addData("Alliance", alliance);
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
         if (localizer != null) {
             telemetry.addData("Pinpoint", "%s%s", localizer.status(), localizer.usingImuFallback() ? "  HUB IMU FALLBACK" : "");

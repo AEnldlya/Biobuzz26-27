@@ -10,9 +10,11 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
 /**
  * Builds ShotTable and tunes the PIDF gains live.
  *
- * Park at a distance, adjust RPM and hood until volleys go in, then copy the "Table row" line
- * into ShotTable. Cover the whole range you shoot from (at least 5 distances). Values changed
- * here are lost when the OpMode stops, so write them into the code.
+ * Park at a distance and adjust RPM and hood until volleys go in. Then either copy the
+ * "Table row" line into ShotTable the old way, or - better - read "EFFICIENCY_TRIM implied",
+ * put that one number into Ballistics, and the generated table and its regression follow for
+ * every distance. Values changed here are lost when the OpMode stops, so write them into the
+ * code.
  *
  * Gamepad 1
  *   sticks: drive               hold right bumper: fire
@@ -62,14 +64,19 @@ public class ShotTuner extends OpMode {
 
     private void applyStartState() {
         turret.setAlliance(alliance);
-        if (RobotState.pose != null) {
+        boolean saved = RobotState.pose != null;
+        if (saved) {
             follower.setPose(RobotState.pose);
-            turret.setAngleReference(RobotState.turretAngleDeg);
             turret.setUpCell(RobotState.upCell);
         } else {
             follower.setPose(Field.startPose(alliance));
-            turret.setAngleReference(0.0);
             turret.setUpCell(Field.startingUpCell(alliance));
+        }
+        // same rule as TELEOP: with calibrated 1:1 wires the constructor already read the true
+        // angle, and tuning against a turret that is lying about where it points is worse than
+        // useless - the gains would be fitted to the wrong error
+        if (!Turret.hasAbsoluteFeedback()) {
+            turret.setAngleReference(saved ? RobotState.turretAngleDeg : 0.0);
         }
     }
 
@@ -252,6 +259,16 @@ public class ShotTuner extends OpMode {
         if (gamepad1.back && shooter.getRPM() > 100) {
             double kVEstimate = (battery.voltage() / Battery.NOMINAL_VOLTAGE - Shooter.kS) / shooter.getRPM();
             telemetry.addData("kV estimate", "%.8f  (full power, %.2f V)", kVEstimate, battery.voltage());
+        }
+        // Ballistics is designed around one number to fit on the robot. Once a manual RPM
+        // actually scores from this distance, that number can be read straight off here rather
+        // than worked out by hand: exit speed is proportional to trim x RPM, so if the model
+        // asks for rpmModel and reality needs manualRPM, the model's transfer is off by exactly
+        // that ratio. Set EFFICIENCY_TRIM to this, run regenerate(), and the whole table follows.
+        if (manualValues && manualRPM > 100 && !Double.isNaN(distance)) {
+            double rpmModel = ShotTable.rpm(distance);
+            telemetry.addData("EFFICIENCY_TRIM implied", "%.4f  (model %.0f rpm, you used %.0f at %.0f in)",
+                    Ballistics.EFFICIENCY_TRIM * rpmModel / manualRPM, rpmModel, manualRPM, distance);
         }
         telemetry.addData("Gain (gamepad 2)", "%s = %.6f", GAIN_NAMES[selectedGain], getGain(selectedGain));
         telemetry.update();

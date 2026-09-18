@@ -60,7 +60,10 @@ public final class Ballistics {
     private Ballistics() {
     }
 
-    /** POLLEN or NECTAR in the shooter: the table regenerates for the other ball. */
+    /**
+     * POLLEN or NECTAR in the shooter: the shot table switches to the other ball. Both tables
+     * were solved when ShotTable loaded, so this is a copy and is safe to call mid-match.
+     */
     public static void setNectar(boolean shootNectar) {
         if (shootNectar == nectar) {
             return;
@@ -68,7 +71,7 @@ public final class Ballistics {
         nectar = shootNectar;
         BALL_DIAMETER_IN = nectar ? Field.NECTAR_DIAMETER_IN : Field.POLLEN_DIAMETER_IN;
         BALL_MASS_KG = nectar ? Field.NECTAR_MASS_KG : Field.POLLEN_MASS_KG;
-        ShotTable.regenerate();
+        ShotTable.selectBall(nectar);
     }
 
     public static boolean isNectar() {
