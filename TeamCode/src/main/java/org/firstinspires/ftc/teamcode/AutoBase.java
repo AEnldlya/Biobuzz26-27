@@ -144,7 +144,8 @@ public abstract class AutoBase extends OpMode {
         intake = new Intake(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
-        // the turret must be facing forward at init
+        // with calibrated 1:1 wires the turret reads its own angle; otherwise it must be
+        // facing forward right now (init_loop says which)
         turret = new Turret(hardwareMap);
         turret.setAlliance(alliance);
         turret.setUpCell(Field.startingUpCell(alliance));
@@ -166,7 +167,9 @@ public abstract class AutoBase extends OpMode {
             telemetry.addData("Pinpoint", "%s   hub IMU %s", localizer.status(), localizer.hasHubImu() ? "ok" : "none");
         }
         telemetry.addData("Limelight", vision.isConnected() ? "found, looking for " + TARGET_POLLEN : "NOT FOUND (fallback pickup only)");
-        telemetry.addData("Turret", "must be facing forward now");
+        telemetry.addData("Turret", Turret.hasAbsoluteFeedback()
+                ? "absolute from the position wires: it can be anywhere"
+                : "must be FACING FORWARD now");
         telemetry.update();
     }
 

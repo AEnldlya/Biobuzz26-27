@@ -81,8 +81,11 @@ only matter for the fallback heading.
   turret speed. "Turret vel / cmd" in telemetry shows measured vs commanded speed.
 - Starting position: with `GEAR_RATIO = 1` set `Turret.FORWARD_RAW_DEG` and `FORWARD_RAW2_DEG`
   to the "Turret raw 1 / 2" telemetry values read with the turret facing forward, and the turret
-  can start anywhere. With any other ratio (or both left NaN) the turret must face forward when
-  an OpMode inits unless the angle was handed over from AUTO through `RobotState`.
+  can start anywhere - the wires are then absolute, and both OpModes say so on the init screen
+  ("absolute from the position wires"). TELEOP keeps that reading instead of AUTO's saved angle,
+  so nudging the ring between OpModes costs nothing. With any other ratio (or both left NaN) the
+  turret must face forward when an OpMode inits, unless the angle was handed over from AUTO
+  through `RobotState`, and the init screen says "must be FACING FORWARD now".
 - Tuning order in `Shot Tuner`: measure `kV` first (full power in MANUAL mode, read "Turret
   vel", kV = 1 / that speed in deg/s), then raise vel `kP` until the measured speed follows the
   commanded speed without oscillating, then pos `kP` until it snaps to target without
@@ -209,31 +212,45 @@ fire from the wrong side (G417).
 4. Limelight pipelines, then camera mount numbers with `Pollen Vision Test`.
 5. Field waypoints, then `PathProfiles` end constraints if paths stall or overshoot.
 
-## Simulator (`TeamCode/src/test/java/.../sim`)
+## Simulator (on the `claude/simulator` branch, NOT in the robot code)
 
-The real OpModes, turret, shooter, intake, Pedro Foresight and the pollen finder run on the
-desktop JVM against a simulated robot. Run it with:
+This branch holds only code that goes on the robot. The desktop simulator that was used to
+verify all of it lives on the **`claude/simulator`** branch, under `TeamCode/src/test/`.
+
+It is a JUnit suite that runs the real OpModes, turret, shooter, intake, vision and Pedro
+Foresight on a laptop against physics models of the robot and the BIOBUZZ field. Nothing in it
+is needed to build or run the robot, and Android never packages `src/test` into the APK, but it
+is kept off this branch so what you upload is only robot code. To use it:
 
 ```
-./gradlew :TeamCode:testDebugUnitTest
+git checkout claude/simulator
+./gradlew :TeamCode:testDebugUnitTest      # 15 tests, ~2 min, replays in TeamCode/build/sim/*.html
 ```
 
-It takes about 90 s (the code uses wall-clock timers, so the 30 s autos run in real time) and
-writes replays to `TeamCode/build/sim/*.html` (open in a browser: play / scrub, the field from
-above, the turret and where it should point, pollen, shots, Driver Station telemetry) plus
-matching CSVs.
+The robot code has three small seams so the simulator can stand in for hardware, and they are
+harmless (and useful) on the real robot:
 
-| Test | What it proves |
+| Seam | What it is for |
 | --- | --- |
-| `AutoSimTest` | `RED AUTO` and `BLUE AUTO` end to end on the rules-staged field: 3 POLLEN tip the HIVE, the camera finds the GARDEN line (ignoring an opponent NECTAR), the intake collects it, the second volley goes into the new up CELL from the rear, PARK in the LOADING ZONE; AUTO points are totted up like the rules |
-| `TurretTrackingSimTest` | turret stays on the CELL while the robot spins and drives; a glitching position wire is flagged and ignored |
-| `PollenVisionSimTest` | the pollen finder places the GARDEN line within an inch or two of where it is and ignores NECTAR |
-| `PathHeadingTest` | pins down Pedro's reversed `linear(a, b)` arguments and proves `PathProfiles.straight()` ends at the target heading |
-| `ShootingPhysicsTest` | the generated table and its regression drop POLLEN through the CELL mouth from 18 to 78 in; 20 % slow or 25 % fast misses; NECTAR gets its own table |
+| `Constants.localizerFactory` / `drivetrainFactory` | swap the Pinpoint and mecanum for models |
+| `pedro.PoseHistory` | the pose at an earlier instant, for camera latency |
+| `vision.PollenCamera` + `PollenVision.CAMERA_FACTORY` | swap the Limelight for a virtual one |
 
-Models: `SimRobot` (mecanum velocity lag, brake, odometry noise), `SimTurret` (two CR servos
-with dead zone and lag, two analog wires with noise and wrap), `SimShooter` (flywheel lag,
-RPM drop per ball; shots fly in 3D through `Ballistics` into the tilted CELL opening), `SimCamera` (Limelight FOV, frame rate,
-latency, pipeline switch time), and ball handling in `SimWorld`. The robot code is swapped
-onto the models only through `Constants.localizerFactory` / `drivetrainFactory` and
-`PollenVision.CAMERA_FACTORY`.
+What the suite proved, on the field geometry in `Field.java`:
+
+| Test | Result |
+| --- | --- |
+| `AutoSimTest` | `RED AUTO` and `BLUE AUTO`, 30 s each: **36 AUTO points** (LEAVE 3 + TIP 20 + PARK 5 + 8 left in the CELL), 7 of 7 shots in, HIVE tipped once, GARDEN POLLEN collected, an opponent NECTAR correctly ignored |
+| `ShootingPhysicsTest` | the cubic regression fits the physics to 0.03 %; POLLEN drops through the CELL mouth from 18 to 78 in; 20 % slow or 25 % fast misses; NECTAR needs no separate table |
+| `TurretTrackingSimTest` | settled error 0.14 deg, 95th percentile 3.6 deg while spinning at 75 deg/s and driving; a glitching position wire moves the turret 0.7 deg and is flagged |
+| `PollenVisionSimTest` | the GARDEN line is located 0.8 in from truth and NECTAR is ignored |
+| `TeleOpSimTest` | `Biobuzz TeleOp` under a simulated driver: the stick mapping drives forward / strafes right / turns clockwise as labelled, the turret holds the CELL to 3.2 deg while the driver drives, the trigger and bumper work the intake and blocker, holding fire from the shooting spot scores, and the AUTO hand-off restores the pose and up CELL |
+| `PathHeadingTest` | pins down Pedro's reversed `linear(a, b)` arguments |
+
+Models behind it: `SimRobot` (12 in mecanum, velocity lag, braking, odometry noise),
+`SimTurret` (two CR servos with dead zone and lag, two analog wires with noise, wrap and
+injectable glitches), `SimShooter` (flywheel lag, RPM drop per ball), `SimCamera` (Limelight
+field of view, frame rate, latency, pipeline switch time), `SimWorld` (fake HardwareMap,
+POLLEN and NECTAR on the tiles, intake and blocker ball handling, 3D ballistic shots into the
+tilted CELL mouth, HIVE tipping with its 0.88 s swing, AUTO points counted like the rules) and
+`SimReport` (CSV plus a self-contained HTML replay with play and scrub).

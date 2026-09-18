@@ -68,13 +68,20 @@ public class BiobuzzTeleOp extends OpMode {
         turret.setAlliance(alliance);
         if (useSavedPose) {
             follower.setPose(RobotState.pose);
-            turret.setAngleReference(RobotState.turretAngleDeg);
             turret.setUpCell(RobotState.upCell);
         } else {
             follower.setPose(Field.startPose(alliance));
-            // no hand-off: the turret has to be facing forward right now
-            turret.setAngleReference(0.0);
             turret.setUpCell(Field.startingUpCell(alliance));
+        }
+        // Where the turret is pointing is a question about the hardware, not about AUTO. With
+        // calibrated 1:1 position wires the reading is absolute and the constructor already has
+        // the right answer, so AUTO's last number must not overwrite it: if the ring was nudged
+        // between OpModes, or AUTO's estimate had drifted, taking the saved value would leave
+        // the turret confidently wrong by that much for the whole match with nothing in
+        // telemetry to show it. Only when the wires cannot say (geared down, or forward not
+        // calibrated) is the hand-off the best estimate available.
+        if (!Turret.hasAbsoluteFeedback()) {
+            turret.setAngleReference(useSavedPose ? RobotState.turretAngleDeg : 0.0);
         }
     }
 
@@ -105,10 +112,14 @@ public class BiobuzzTeleOp extends OpMode {
         if (useSavedPose) {
             telemetry.addData("Start", "position saved by AUTO (A to ignore)");
         } else if (RobotState.pose != null) {
-            telemetry.addData("Start", "default start pose, turret facing forward (A to use AUTO's)");
+            telemetry.addData("Start", "default start pose (A to use AUTO's)");
         } else {
-            telemetry.addData("Start", "default start pose, turret must face forward");
+            telemetry.addData("Start", "default start pose");
         }
+        telemetry.addData("Turret start", Turret.hasAbsoluteFeedback()
+                ? "absolute from the position wires: it can be anywhere"
+                : useSavedPose ? "AUTO's last angle (no absolute feedback)"
+                        : "assumed FACING FORWARD - point it forward now");
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
         telemetry.addData("Up CELL", turret.getUpCell());
         telemetry.update();

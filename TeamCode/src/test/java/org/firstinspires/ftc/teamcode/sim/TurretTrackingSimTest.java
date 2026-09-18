@@ -33,7 +33,12 @@ public class TurretTrackingSimTest {
         turret.setAlliance(Alliance.RED);
         turret.setUpCell(Field.startingUpCell(Alliance.RED));
         turret.setMode(Turret.Mode.AUTO_AIM);
-        Turret.LEAD_GAIN = 0.0; // measure pure pointing, no shoot-on-the-move lead
+        double lead = Turret.LEAD_GAIN;
+        // measure pure pointing, no shoot-on-the-move lead. Restore it however this exits:
+        // LEAD_GAIN is static, so leaking 0 here would silently disarm the lead in every test
+        // that runs after this one in the same JVM.
+        Turret.LEAD_GAIN = 0.0;
+        try {
 
         List<Double> movingErrors = new ArrayList<>();
         double settleError = Double.NaN;
@@ -66,7 +71,6 @@ public class TurretTrackingSimTest {
             }
             Thread.sleep(5);
         }
-        Turret.LEAD_GAIN = 1.0;
         world.report.write("turret_tracking");
 
         double p95 = p95(movingErrors);
@@ -76,6 +80,9 @@ public class TurretTrackingSimTest {
         assertTrue("did not settle on target: " + settleError, settleError < 1.5);
         assertTrue("tracking error while moving too large (p95 " + p95 + ")", p95 < 4.0);
         assertTrue("tracking error spike (max " + max + ")", max < 8.0);
+        } finally {
+            Turret.LEAD_GAIN = lead;
+        }
     }
 
     @Test

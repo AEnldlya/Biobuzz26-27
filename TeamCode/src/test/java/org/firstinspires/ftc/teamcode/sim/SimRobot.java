@@ -34,9 +34,16 @@ public class SimRobot implements Drivetrain, Localizer, PoseHistory {
     public double maxTurnRadS = Math.toRadians(300.0);
     /** velocity response time constant, s */
     public double tau = 0.12;
-    /** stopping deceleration at zero power with brake, in/s^2 */
-    public double brakeDecel = 70.0;
-    public double turnBrakeDecel = Math.toRadians(900.0);
+    /**
+     * Zero-power deceleration while COASTING, in/s^2 and rad/s^2. The motors are in FLOAT while
+     * the Follower is following a path (Mecanum only switches to BRAKE for manual teleop
+     * powers), so this is the number Pedro's tuning calls "zero power acceleration" and the one
+     * Foresight's brake model is built on - Constants uses 68.3 / 79.305. Under BRAKE the
+     * motors resist and the stop is quicker than this limit, modelled by the velocity lag
+     * alone.
+     */
+    public double coastDecel = 68.3;
+    public double coastTurnDecel = Math.toRadians(900.0);
     /** odometry noise, 1 sigma, inches / radians */
     public double poseNoiseIn = 0.05;
     public double headingNoiseRad = Math.toRadians(0.15);
@@ -69,26 +76,30 @@ public class SimRobot implements Drivetrain, Localizer, PoseHistory {
     }
 
     @Override
-    public void drive(DrivePowers powers, boolean normalize) {
+    /**
+     * Pedro's boolean is "manual", not "normalize": the Follower passes true only for teleop
+     * stick powers and false while following or holding a path. The real Mecanum ALWAYS scales
+     * the wheel powers down by max(1, |w|max) (applyDrive), and uses the flag only to pick the
+     * zero-power behaviour, which MecanumConfig.manualBrakeMode defaults to BRAKE in manual and
+     * FLOAT while following. Model both the same way, or the simulated robot saturates
+     * differently from the real one and coasts when the real one would brake.
+     */
+    public void drive(DrivePowers powers, boolean manual) {
         lastPowers = powers;
         double[] w = wheels(powers.forward(), powers.strafe(), powers.turn());
         double max = 0;
         for (double v : w) {
             max = Math.max(max, Math.abs(v));
         }
-        if (normalize && max > 1.0) {
+        if (max > 1.0) {
             for (int i = 0; i < 4; i++) {
                 w[i] /= max;
-            }
-        } else {
-            for (int i = 0; i < 4; i++) {
-                w[i] = Math.max(-1, Math.min(1, w[i]));
             }
         }
         cmdForward = (w[0] + w[1] + w[2] + w[3]) / 4.0;
         cmdStrafe = (w[0] - w[1] - w[2] + w[3]) / 4.0;
         cmdTurn = (w[0] - w[1] + w[2] - w[3]) / 4.0;
-        braking = false;
+        braking = manual;
     }
 
     @Override
@@ -184,9 +195,10 @@ public class SimRobot implements Drivetrain, Localizer, PoseHistory {
         double tf = cmdForward * maxForwardInS;
         double ts = cmdStrafe * maxStrafeInS;
         double tt = cmdTurn * maxTurnRadS;
-        vForward = approach(vForward, tf, dt, braking ? brakeDecel : 0);
-        vStrafe = approach(vStrafe, ts, dt, braking ? brakeDecel : 0);
-        omega = approach(omega, tt, dt, braking ? turnBrakeDecel : 0);
+        // 0 = no limit: under BRAKE the motors resist, so the lag alone stops it
+        vForward = approach(vForward, tf, dt, braking ? 0 : coastDecel);
+        vStrafe = approach(vStrafe, ts, dt, braking ? 0 : coastDecel);
+        omega = approach(omega, tt, dt, braking ? 0 : coastTurnDecel);
 
         double cos = Math.cos(heading);
         double sin = Math.sin(heading);
@@ -210,7 +222,7 @@ public class SimRobot implements Drivetrain, Localizer, PoseHistory {
         }
     }
 
-    /** first-order approach to target; with a decel limit when coasting to zero under brake */
+    /** first-order approach to target, with a deceleration limit when coasting to zero */
     private double approach(double v, double target, double dt, double decelLimit) {
         double next = v + (target - v) * Math.min(1.0, dt / tau);
         if (decelLimit > 0 && target == 0.0) {
