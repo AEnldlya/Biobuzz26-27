@@ -43,14 +43,20 @@ public class CompensatedDrivetrain implements Drivetrain {
         return Math.max(MIN_SCALE, Math.min(MAX_SCALE, battery.compensation()));
     }
 
+    /**
+     * The boolean is Pedro's "manual" flag, not a normalize flag: the Follower passes true only
+     * for teleop stick powers (Follower.manual) and false while following or holding a path.
+     * Mecanum uses it to pick the zero-power behaviour (BRAKE in manual, FLOAT otherwise) and
+     * normalizes the wheel powers either way, so it is passed straight through.
+     */
     @Override
-    public void drive(DrivePowers powers, boolean normalize) {
+    public void drive(DrivePowers powers, boolean manual) {
         double s = scale();
         if (s == 1.0) {
-            mecanum.drive(powers, normalize);
+            mecanum.drive(powers, manual);
             return;
         }
-        mecanum.drive(new DrivePowers(powers.forward() * s, powers.strafe() * s, powers.turn() * s), normalize);
+        mecanum.drive(new DrivePowers(powers.forward() * s, powers.strafe() * s, powers.turn() * s), manual);
     }
 
     @Override

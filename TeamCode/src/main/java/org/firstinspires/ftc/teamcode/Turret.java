@@ -179,6 +179,17 @@ public class Turret {
         lastNs = System.nanoTime();
     }
 
+    /**
+     * True when the position wires alone fix the turret's angle, so it can start anywhere and
+     * does not need to be told where it is: 1:1 servos (GEAR_RATIO 1, so the analog angle IS
+     * the turret angle) with at least one wire's forward raw angle calibrated. When this is
+     * false the turret must either be facing forward at init or be handed an angle with
+     * setAngleReference().
+     */
+    public static boolean hasAbsoluteFeedback() {
+        return GEAR_RATIO == 1.0 && (!Double.isNaN(FORWARD_RAW_DEG) || !Double.isNaN(FORWARD_RAW2_DEG));
+    }
+
     /** Tell the turret its current angle (e.g. the angle AUTO ended at) instead of forward = 0. */
     public void setAngleReference(double currentAngleDeg) {
         zeroDeg = unwrappedDeg - currentAngleDeg * GEAR_RATIO * ENCODER_DIRECTION;
