@@ -209,31 +209,44 @@ fire from the wrong side (G417).
 4. Limelight pipelines, then camera mount numbers with `Pollen Vision Test`.
 5. Field waypoints, then `PathProfiles` end constraints if paths stall or overshoot.
 
-## Simulator (`TeamCode/src/test/java/.../sim`)
+## Simulator (on the `claude/simulator` branch, NOT in the robot code)
 
-The real OpModes, turret, shooter, intake, Pedro Foresight and the pollen finder run on the
-desktop JVM against a simulated robot. Run it with:
+This branch holds only code that goes on the robot. The desktop simulator that was used to
+verify all of it lives on the **`claude/simulator`** branch, under `TeamCode/src/test/`.
+
+It is a JUnit suite that runs the real OpModes, turret, shooter, intake, vision and Pedro
+Foresight on a laptop against physics models of the robot and the BIOBUZZ field. Nothing in it
+is needed to build or run the robot, and Android never packages `src/test` into the APK, but it
+is kept off this branch so what you upload is only robot code. To use it:
 
 ```
-./gradlew :TeamCode:testDebugUnitTest
+git checkout claude/simulator
+./gradlew :TeamCode:testDebugUnitTest      # ~90 s, writes replays to TeamCode/build/sim/*.html
 ```
 
-It takes about 90 s (the code uses wall-clock timers, so the 30 s autos run in real time) and
-writes replays to `TeamCode/build/sim/*.html` (open in a browser: play / scrub, the field from
-above, the turret and where it should point, pollen, shots, Driver Station telemetry) plus
-matching CSVs.
+The robot code has three small seams so the simulator can stand in for hardware, and they are
+harmless (and useful) on the real robot:
 
-| Test | What it proves |
+| Seam | What it is for |
 | --- | --- |
-| `AutoSimTest` | `RED AUTO` and `BLUE AUTO` end to end on the rules-staged field: 3 POLLEN tip the HIVE, the camera finds the GARDEN line (ignoring an opponent NECTAR), the intake collects it, the second volley goes into the new up CELL from the rear, PARK in the LOADING ZONE; AUTO points are totted up like the rules |
-| `TurretTrackingSimTest` | turret stays on the CELL while the robot spins and drives; a glitching position wire is flagged and ignored |
-| `PollenVisionSimTest` | the pollen finder places the GARDEN line within an inch or two of where it is and ignores NECTAR |
-| `PathHeadingTest` | pins down Pedro's reversed `linear(a, b)` arguments and proves `PathProfiles.straight()` ends at the target heading |
-| `ShootingPhysicsTest` | the generated table and its regression drop POLLEN through the CELL mouth from 18 to 78 in; 20 % slow or 25 % fast misses; NECTAR gets its own table |
+| `Constants.localizerFactory` / `drivetrainFactory` | swap the Pinpoint and mecanum for models |
+| `pedro.PoseHistory` | the pose at an earlier instant, for camera latency |
+| `vision.PollenCamera` + `PollenVision.CAMERA_FACTORY` | swap the Limelight for a virtual one |
 
-Models: `SimRobot` (mecanum velocity lag, brake, odometry noise), `SimTurret` (two CR servos
-with dead zone and lag, two analog wires with noise and wrap), `SimShooter` (flywheel lag,
-RPM drop per ball; shots fly in 3D through `Ballistics` into the tilted CELL opening), `SimCamera` (Limelight FOV, frame rate,
-latency, pipeline switch time), and ball handling in `SimWorld`. The robot code is swapped
-onto the models only through `Constants.localizerFactory` / `drivetrainFactory` and
-`PollenVision.CAMERA_FACTORY`.
+What the suite proved, on the field geometry in `Field.java`:
+
+| Test | Result |
+| --- | --- |
+| `AutoSimTest` | `RED AUTO` and `BLUE AUTO`, 30 s each: **36 AUTO points** (LEAVE 3 + TIP 20 + PARK 5 + 8 left in the CELL), 7 of 7 shots in, HIVE tipped once, GARDEN POLLEN collected, an opponent NECTAR correctly ignored |
+| `ShootingPhysicsTest` | the cubic regression fits the physics to 0.03 %; POLLEN drops through the CELL mouth from 18 to 78 in; 20 % slow or 25 % fast misses; NECTAR needs no separate table |
+| `TurretTrackingSimTest` | settled error 0.14 deg, 95th percentile 3.6 deg while spinning at 75 deg/s and driving; a glitching position wire moves the turret 0.7 deg and is flagged |
+| `PollenVisionSimTest` | the GARDEN line is located 0.8 in from truth and NECTAR is ignored |
+| `PathHeadingTest` | pins down Pedro's reversed `linear(a, b)` arguments |
+
+Models behind it: `SimRobot` (12 in mecanum, velocity lag, braking, odometry noise),
+`SimTurret` (two CR servos with dead zone and lag, two analog wires with noise, wrap and
+injectable glitches), `SimShooter` (flywheel lag, RPM drop per ball), `SimCamera` (Limelight
+field of view, frame rate, latency, pipeline switch time), `SimWorld` (fake HardwareMap,
+POLLEN and NECTAR on the tiles, intake and blocker ball handling, 3D ballistic shots into the
+tilted CELL mouth, HIVE tipping with its 0.88 s swing, AUTO points counted like the rules) and
+`SimReport` (CSV plus a self-contained HTML replay with play and scrub).

@@ -22,22 +22,8 @@ android {
     packagingOptions {
         jniLibs.useLegacyPackaging true
     }
-
-    // The simulator (src/test) runs the real robot code on the desktop JVM against the SDK
-    // jars; Android framework calls that get hit return defaults instead of throwing.
-    testOptions {
-        unitTests.returnDefaultValues = true
-        unitTests.all {
-            testLogging {
-                events 'passed', 'failed', 'skipped'
-                showStandardStreams = true
-                exceptionFormat 'full'
-            }
-        }
-    }
 }
 
 dependencies {
     implementation project(':FtcRobotController')
-    testImplementation 'junit:junit:4.13.2'
 }
