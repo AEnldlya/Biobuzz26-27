@@ -9,15 +9,15 @@ import com.pedropathing.follower.Follower;
 import com.pedropathing.localization.Localizer;
 import com.pedropathing.math.Matrix;
 import com.pedropathing.math.Vector2D;
-import com.pedropathing.revhub.drivetrains.Mecanum;
 import com.pedropathing.revhub.drivetrains.MecanumConfig;
 import com.pedropathing.revhub.localizers.PinpointConfig;
-import com.pedropathing.revhub.localizers.PinpointLocalizer;
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+
+import java.util.function.Function;
 
 /**
  * Pedro Pathing 3.0 robot config.
@@ -27,8 +27,21 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
  * from the old tuning (max velocities, zero-power deceleration, translational/heading P) and
  * MUST be re-tuned with AutoTune: with the robot on, open http://192.168.43.1:10158 and run
  * "3. Foresight" (see Tuning.java).
+ *
+ * Custom pieces plugged into the Follower:
+ *   - FusedPinpointLocalizer: Pinpoint dead wheels + IMU, hub IMU heading backstop, pose
+ *     history for camera latency compensation
+ *   - CompensatedDrivetrain: mecanum with battery voltage compensation
+ *   - PathProfiles: per-path end constraints and speed caps
  */
 public class Constants {
+    // Foresight's built-in path-end constraints are far too tight for a real robot (see
+    // PathProfiles). These are the robot-wide defaults; PathProfiles overrides them per path.
+    public static double DEFAULT_TRANSLATIONAL_END_IN = 1.0;
+    public static double DEFAULT_HEADING_END_RAD = Math.toRadians(2.0);
+    public static double DEFAULT_VELOCITY_END_IN_S = 3.0;
+    public static double DEFAULT_TIMEOUT_MS = 600;
+
     public static MecanumConfig drivetrainConfig = new MecanumConfig(c -> {
         c.frontLeftName.set("frontLeftMotor");
         c.frontRightName.set("frontRightMotor");
@@ -73,14 +86,27 @@ public class Constants {
         c.maxAchievableStrafeVelocity.set(44.004);
         c.naturalForwardDeceleration.set(68.3);
         c.naturalStrafeDeceleration.set(79.305);
+
+        // path-end conditions the robot can actually meet (PathProfiles overrides per path)
+        c.translationalConstraint.set(DEFAULT_TRANSLATIONAL_END_IN);
+        c.headingConstraint.set(DEFAULT_HEADING_END_RAD);
+        c.velocityConstraint.set(DEFAULT_VELOCITY_END_IN_S);
+        c.timeoutConstraint.set(DEFAULT_TIMEOUT_MS);
+        c.brakeAtEnd.set(true);
     });
 
+    // The simulator swaps these for models of the robot; everything else stays the real code.
+    public static Function<HardwareMap, Localizer> localizerFactory =
+            hardwareMap -> new FusedPinpointLocalizer(hardwareMap, localizerConfig);
+    public static Function<HardwareMap, Drivetrain> drivetrainFactory =
+            hardwareMap -> new CompensatedDrivetrain(hardwareMap, drivetrainConfig);
+
     public static Localizer localizer(HardwareMap hardwareMap) {
-        return new PinpointLocalizer(hardwareMap, localizerConfig);
+        return localizerFactory.apply(hardwareMap);
     }
 
     public static Drivetrain drivetrain(HardwareMap hardwareMap) {
-        return new Mecanum(hardwareMap, drivetrainConfig);
+        return drivetrainFactory.apply(hardwareMap);
     }
 
     public static Algorithm algorithm() {
@@ -88,6 +114,24 @@ public class Constants {
     }
 
     public static Follower create(HardwareMap hardwareMap) {
-        return new Follower(localizer(hardwareMap), drivetrain(hardwareMap), algorithm());
+        Follower follower = new Follower(localizer(hardwareMap), drivetrain(hardwareMap), algorithm());
+        // after a path ends, hold its end pose (so the robot stays put while shooting) instead
+        // of going idle and drifting
+        follower.holdEnd.set(true);
+        return follower;
+    }
+
+    /** The fused localizer behind a Follower built by create(), or null for any other. */
+    public static FusedPinpointLocalizer fusedLocalizer(Follower follower) {
+        return follower.localizer instanceof FusedPinpointLocalizer
+                ? (FusedPinpointLocalizer) follower.localizer : null;
+    }
+
+    /** Pose history for camera latency compensation: the localizer's if it keeps one. */
+    public static PoseHistory poseHistory(Follower follower) {
+        if (follower.localizer instanceof PoseHistory) {
+            return (PoseHistory) follower.localizer;
+        }
+        return nanoTime -> follower.pose();
     }
 }

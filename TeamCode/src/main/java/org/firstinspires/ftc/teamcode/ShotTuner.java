@@ -10,9 +10,11 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
 /**
  * Builds ShotTable and tunes the PIDF gains live.
  *
- * Park at a distance, adjust RPM and hood until volleys go in, then copy the "Table row" line
- * into ShotTable. Cover the whole range you shoot from (at least 5 distances). Values changed
- * here are lost when the OpMode stops, so write them into the code.
+ * Park at a distance and adjust RPM and hood until volleys go in. Then either copy the
+ * "Table row" line into ShotTable the old way, or - better - read "EFFICIENCY_TRIM implied",
+ * put that one number into Ballistics, and the generated table and its regression follow for
+ * every distance. Values changed here are lost when the OpMode stops, so write them into the
+ * code.
  *
  * Gamepad 1
  *   sticks: drive               hold right bumper: fire
@@ -29,13 +31,13 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
 @TeleOp(name = "Shot Tuner", group = "Tuning")
 public class ShotTuner extends OpMode {
     private static final String[] GAIN_NAMES = {
-            "Turret kP", "Turret kI", "Turret kD", "Turret kV", "Turret kS",
+            "Turret pos kP", "Turret pos kI", "Turret vel kP", "Turret vel kI", "Turret kV", "Turret kS",
             "Shooter kP", "Shooter kI", "Shooter kV", "Shooter kS"
     };
     private Hubs hubs;
     private Battery battery;
     private Follower follower;
-    private Claw claw;
+    private Intake intake;
     private Shooter shooter;
     private Turret turret;
 
@@ -51,10 +53,10 @@ public class ShotTuner extends OpMode {
         hubs = new Hubs(hardwareMap);
         battery = new Battery(hardwareMap);
         follower = Constants.create(hardwareMap);
-        claw = new Claw(hardwareMap);
+        intake = new Intake(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
-        turret = new Turret(hardwareMap, battery);
+        turret = new Turret(hardwareMap);
 
         alliance = RobotState.alliance;
         applyStartState();
@@ -62,14 +64,19 @@ public class ShotTuner extends OpMode {
 
     private void applyStartState() {
         turret.setAlliance(alliance);
-        if (RobotState.pose != null) {
+        boolean saved = RobotState.pose != null;
+        if (saved) {
             follower.setPose(RobotState.pose);
-            turret.setAngleReference(RobotState.turretAngleDeg);
             turret.setUpCell(RobotState.upCell);
         } else {
             follower.setPose(Field.startPose(alliance));
-            turret.setAngleReference(0.0);
             turret.setUpCell(Field.startingUpCell(alliance));
+        }
+        // same rule as TELEOP: with calibrated 1:1 wires the constructor already read the true
+        // angle, and tuning against a turret that is lying about where it points is worse than
+        // useless - the gains would be fitted to the wrong error
+        if (!Turret.hasAbsoluteFeedback()) {
+            turret.setAngleReference(saved ? RobotState.turretAngleDeg : 0.0);
         }
     }
 
@@ -123,20 +130,17 @@ public class ShotTuner extends OpMode {
         shooter.update();
 
         if (gamepad1.right_bumper) {
-            claw.feedForShot();
-            claw.release();
+            intake.shoot();
             firing = true;
         } else {
             if (firing) {
-                claw.close();
-                claw.stop();
+                intake.stop();
                 firing = false;
             }
             if (gamepad1.right_trigger > 0.5) {
-                claw.close();
-                claw.run();
+                intake.intake();
             } else if (gamepad1.left_trigger > 0.5) {
-                claw.stop();
+                intake.stop();
             }
         }
 
@@ -146,8 +150,7 @@ public class ShotTuner extends OpMode {
 
     @Override
     public void stop() {
-        claw.stop();
-        claw.close();
+        intake.stop();
         shooter.stop();
         turret.stop();
     }
@@ -202,28 +205,30 @@ public class ShotTuner extends OpMode {
 
     private static double getGain(int index) {
         switch (index) {
-            case 0: return Turret.kP;
-            case 1: return Turret.kI;
-            case 2: return Turret.kD;
-            case 3: return Turret.kV;
-            case 4: return Turret.kS;
-            case 5: return Shooter.kP;
-            case 6: return Shooter.kI;
-            case 7: return Shooter.kV;
+            case 0: return Turret.POS_kP;
+            case 1: return Turret.POS_kI;
+            case 2: return Turret.kP;
+            case 3: return Turret.kI;
+            case 4: return Turret.kV;
+            case 5: return Turret.kS;
+            case 6: return Shooter.kP;
+            case 7: return Shooter.kI;
+            case 8: return Shooter.kV;
             default: return Shooter.kS;
         }
     }
 
     private static void setGain(int index, double value) {
         switch (index) {
-            case 0: Turret.kP = value; break;
-            case 1: Turret.kI = value; break;
-            case 2: Turret.kD = value; break;
-            case 3: Turret.kV = value; break;
-            case 4: Turret.kS = value; break;
-            case 5: Shooter.kP = value; break;
-            case 6: Shooter.kI = value; break;
-            case 7: Shooter.kV = value; break;
+            case 0: Turret.POS_kP = value; break;
+            case 1: Turret.POS_kI = value; break;
+            case 2: Turret.kP = value; break;
+            case 3: Turret.kI = value; break;
+            case 4: Turret.kV = value; break;
+            case 5: Turret.kS = value; break;
+            case 6: Shooter.kP = value; break;
+            case 7: Shooter.kI = value; break;
+            case 8: Shooter.kV = value; break;
             default: Shooter.kS = value; break;
         }
     }
@@ -231,15 +236,16 @@ public class ShotTuner extends OpMode {
     /** starting value when bumping a gain up from zero */
     private static double defaultStep(int index) {
         switch (index) {
-            case 0: return 0.001;
-            case 1: return 0.0001;
-            case 2: return 0.0001;
-            case 3: return 0.001;
-            case 4: return 0.02;
-            case 5: return 0.0001;
-            case 6: return 0.0001;
-            case 7: return 0.0001;
-            default: return 0.01;
+            case 0: return 1.0;      // turret pos kP, deg/s per deg
+            case 1: return 0.1;      // turret pos kI
+            case 2: return 0.0005;   // turret vel kP, power per deg/s
+            case 3: return 0.0005;   // turret vel kI
+            case 4: return 0.001;    // turret kV
+            case 5: return 0.02;     // turret kS
+            case 6: return 0.0001;   // shooter kP
+            case 7: return 0.0001;   // shooter kI
+            case 8: return 0.0001;   // shooter kV
+            default: return 0.01;    // shooter kS
         }
     }
 
@@ -253,6 +259,16 @@ public class ShotTuner extends OpMode {
         if (gamepad1.back && shooter.getRPM() > 100) {
             double kVEstimate = (battery.voltage() / Battery.NOMINAL_VOLTAGE - Shooter.kS) / shooter.getRPM();
             telemetry.addData("kV estimate", "%.8f  (full power, %.2f V)", kVEstimate, battery.voltage());
+        }
+        // Ballistics is designed around one number to fit on the robot. Once a manual RPM
+        // actually scores from this distance, that number can be read straight off here rather
+        // than worked out by hand: exit speed is proportional to trim x RPM, so if the model
+        // asks for rpmModel and reality needs manualRPM, the model's transfer is off by exactly
+        // that ratio. Set EFFICIENCY_TRIM to this, run regenerate(), and the whole table follows.
+        if (manualValues && manualRPM > 100 && !Double.isNaN(distance)) {
+            double rpmModel = ShotTable.rpm(distance);
+            telemetry.addData("EFFICIENCY_TRIM implied", "%.4f  (model %.0f rpm, you used %.0f at %.0f in)",
+                    Ballistics.EFFICIENCY_TRIM * rpmModel / manualRPM, rpmModel, manualRPM, distance);
         }
         telemetry.addData("Gain (gamepad 2)", "%s = %.6f", GAIN_NAMES[selectedGain], getGain(selectedGain));
         telemetry.update();
