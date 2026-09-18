@@ -151,8 +151,16 @@ The shot table is not hand-typed: it is generated from physics when the code loa
   plane going in, inside the rectangle by its radius.
 
 To tune on the robot: measure the ball, wheel, launch height and hood calibration into
-`Ballistics`, then shoot from one known distance and adjust `EFFICIENCY_TRIM` until it drops
-in; `ShotTable.regenerate()` (or a restart) rebuilds everything.
+`Ballistics`, then park at one known distance and walk the manual RPM in `Shot Tuner` until the
+ball drops in. The tuner prints **`EFFICIENCY_TRIM implied`** from that RPM (exit speed is
+proportional to trim × RPM, so the ratio between the RPM the model wants and the one that works
+*is* the correction); put that single number into `Ballistics` and `ShotTable.regenerate()` (or
+a restart) rebuilds the whole table and its regression. Copying individual `Table row` lines
+still works if you would rather hand-fit.
+
+Both balls' tables are solved when `ShotTable` loads, so switching POLLEN/NECTAR during a match
+is an array copy (~0.02 ms) rather than a re-solve. Doing the solve on the button would stall
+the loop about a fifth of a second on a Control Hub, with the turret and flywheel frozen.
 
 ## BIOBUZZ game facts the code relies on (Competition Manual V1 / TU01, Field Setup Guide V1.0)
 
@@ -208,7 +216,8 @@ fire from the wrong side (G417).
 
 1. AutoTune `1. Mecanum Directions`, `2. Pinpoint`, `3. Foresight`, paste into `Constants`.
 2. `Turret.ENCODER_DIRECTION` / `POWER_DIRECTION`, then turret gains in `Shot Tuner`.
-3. `ShotTable` rows with `Shot Tuner`.
+3. `Ballistics.EFFICIENCY_TRIM` from one scoring distance with `Shot Tuner` (it prints the
+   implied value), or `ShotTable` rows by hand.
 4. Limelight pipelines, then camera mount numbers with `Pollen Vision Test`.
 5. Field waypoints, then `PathProfiles` end constraints if paths stall or overshoot.
 

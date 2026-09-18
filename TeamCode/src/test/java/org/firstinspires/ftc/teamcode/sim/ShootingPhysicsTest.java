@@ -110,6 +110,63 @@ public class ShootingPhysicsTest {
         assertEquals("and the POLLEN ball", Field.POLLEN_DIAMETER_IN, Ballistics.BALL_DIAMETER_IN, 1e-9);
     }
 
+    /**
+     * Switching balls happens on a button in the middle of a match, so it must not re-solve the
+     * table: every row bisects for an exit speed and every trial flies the ball in 2 ms steps,
+     * which costs a fifth of a second on a Control Hub - one frozen loop with the turret and
+     * flywheel not updating. Both tables are solved when ShotTable loads and the switch is a
+     * copy. The bound is deliberately 1000x the real cost so it only fires if someone puts the
+     * solve back on the button.
+     */
+    @Test
+    public void switchingBallsMidMatchDoesNotResolveTheTable() {
+        ShotTable.regenerate();                 // warm every class and JIT path first
+        Ballistics.setNectar(false);
+        double pollenRpm = ShotTable.rpm(48);
+
+        try {
+            long start = System.nanoTime();
+            Ballistics.setNectar(true);
+            double toNectarMs = (System.nanoTime() - start) / 1e6;
+            double nectarRpm = ShotTable.rpm(48);
+
+            start = System.nanoTime();
+            Ballistics.setNectar(false);
+            double backMs = (System.nanoTime() - start) / 1e6;
+
+            System.out.printf("ball switch: %.3f ms out, %.3f ms back%n", toNectarMs, backMs);
+            assertTrue("switching to NECTAR re-solved the table (" + toNectarMs + " ms)", toNectarMs < 2.0);
+            assertTrue("switching back re-solved the table (" + backMs + " ms)", backMs < 2.0);
+            assertTrue("the switch must still leave a usable NECTAR table, got " + nectarRpm,
+                    nectarRpm > 1000 && nectarRpm < 6000);
+            assertEquals("and switching back must restore POLLEN exactly", pollenRpm, ShotTable.rpm(48), 1e-9);
+        } finally {
+            Ballistics.setNectar(false);
+        }
+    }
+
+    /** The cached table has to be what a full solve for that ball would have produced. */
+    @Test
+    public void theCachedTableMatchesAFullSolve() {
+        try {
+            Ballistics.setNectar(true);
+            double[] cached = new double[ShotTable.DISTANCE_IN.length];
+            System.arraycopy(ShotTable.RPM, 0, cached, 0, cached.length);
+            double cachedError = ShotTable.regressionErrorFraction;
+            int cachedUnsolved = ShotTable.unsolvedRows;
+
+            ShotTable.regenerate();             // re-solve with NECTAR selected
+            for (int i = 0; i < cached.length; i++) {
+                assertEquals("row " + ShotTable.DISTANCE_IN[i] + " in differs from a fresh solve",
+                        cached[i], ShotTable.RPM[i], 1e-9);
+            }
+            assertEquals("fit error differs from a fresh solve", cachedError, ShotTable.regressionErrorFraction, 1e-12);
+            assertEquals("unsolved rows differ from a fresh solve", cachedUnsolved, ShotTable.unsolvedRows);
+        } finally {
+            Ballistics.setNectar(false);
+        }
+    }
+
     private static double dragAreaPerMass(double diameterIn, double massKg) {
         double rM = diameterIn * 0.0254 / 2.0;
         return Math.PI * rM * rM / massKg;
