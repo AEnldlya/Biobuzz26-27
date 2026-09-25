@@ -81,6 +81,7 @@ public class FusedPinpointLocalizer implements Localizer, PoseHistory {
     private boolean fallback = false;
     private long lastImuReadMs = 0;
     private long faultSinceMs = 0;
+    private Pose pendingPose = null;
 
     public FusedPinpointLocalizer(HardwareMap hardwareMap, PinpointConfig config) {
         pinpoint = new PinpointLocalizer(hardwareMap, config);
@@ -110,6 +111,13 @@ public class FusedPinpointLocalizer implements Localizer, PoseHistory {
         history.clear();
         fallback = false;
         faultSinceMs = 0;
+        // A position write to a Pinpoint that is still calibrating its IMU can be dropped, and
+        // the robot would then start the match believing it is at the field origin: the turret
+        // aims at nothing and the first path drives off the tiles. Pedro only recalibrates on
+        // reset(), which no match OpMode calls, so the device is normally READY here - but the
+        // cost of being wrong is the whole match, so remember the pose and put it back on the
+        // first healthy update if it was not.
+        pendingPose = status == GoBildaPinpointDriver.DeviceStatus.READY ? null : pose;
         if (imu != null) {
             readImu(System.currentTimeMillis());
             imuOffsetRad = Angle.normalizeSigned(pose.heading() - imuYawRad);
@@ -127,6 +135,11 @@ public class FusedPinpointLocalizer implements Localizer, PoseHistory {
         if (healthy) {
             faultSinceMs = 0;
             fallback = false;
+            if (pendingPose != null) {
+                Pose retry = pendingPose;
+                pendingPose = null;
+                setPose(retry);
+            }
             state = pinpoint.state();
             lastGoodPose = state.pose();
             if (imu != null && nowMs - lastImuReadMs >= IMU_POLL_MS) {
@@ -228,6 +241,11 @@ public class FusedPinpointLocalizer implements Localizer, PoseHistory {
         return Math.toDegrees(imuOffsetRad);
     }
 
+    /** true while a start pose is still waiting for the Pinpoint to come READY */
+    public boolean poseWritePending() {
+        return pendingPose != null;
+    }
+
     @Override
     public Map<String, Object> debug() {
         Map<String, Object> map = new LinkedHashMap<>();
@@ -235,6 +253,7 @@ public class FusedPinpointLocalizer implements Localizer, PoseHistory {
         map.put("imuFallback", fallback);
         map.put("hubImu", imu != null);
         map.put("imuOffsetDeg", Math.toDegrees(imuOffsetRad));
+        map.put("poseWritePending", pendingPose != null);
         return map;
     }
 }
