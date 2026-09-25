@@ -63,6 +63,34 @@ approach do, so `AutoBase.followTo(..., true)` also waits for the heading
 Set `FusedPinpointLocalizer.LOGO_FACING` / `USB_FACING` to how the Control Hub is mounted; they
 only matter for the fallback heading.
 
+### Pinpoint settings to verify per robot
+
+The turret aims from the pose, so every degree of heading error is a degree of aim error. These
+live in `localizerConfig` in `pedro/Constants.java`; check all of them with AutoTune
+**`2. Pinpoint`**, which walks the offsets and directions interactively.
+
+| Setting | Current | What it looks like when it is wrong |
+| --- | --- | --- |
+| `podType` | `goBILDA_4_BAR_POD` | Sets the encoder resolution. 4-bar vs swingarm scales **every** distance, so paths overshoot or stop short by a fixed percentage |
+| `xPodOffset` / `yPodOffset` | 8.6 / 3.86 cm | How far each pod sits from the tracking centre. Wrong offsets show up **only while turning** - drive straight and it looks perfect |
+| `offsetUnits` | `CM` | The offsets are centimetres; everything else in the code is inches |
+| `xPodDirection` / `yPodDirection` | `FORWARD` / `REVERSED` | A flipped pod sends the robot the wrong way along one axis |
+
+**Power the robot on sitting still.** The Pinpoint zeroes its own gyro at power-up, and nothing
+recalibrates it afterwards: Pedro only does that in `Localizer.reset()`, which no match OpMode
+calls (only the AutoTune procedure). So a bias picked up while the robot was being carried at
+boot is the bias the whole match runs on, and a drifting heading walks the turret off target
+over two and a half minutes. If the heading drifts, power-cycle with the robot on the floor.
+
+Both AUTO OpModes show the Pinpoint's `DeviceStatus` on the init screen, and say
+`WAITING to set the start pose` if a pose write is still outstanding - a write to a device that
+is mid-calibration can be dropped, and the localizer re-applies it on the first healthy update
+rather than letting the robot start the match believing it is at the field origin.
+
+**Vibration reaches it.** The dead wheels and the internal IMU are exactly what a badly
+balanced flywheel shakes, and imbalance force rises with the square of RPM: the same gram of
+imbalance that is about 1 lbf at 3,000 RPM is 4.5 lbf at 6,000.
+
 ## Turret
 
 - Field-relative aim from odometry only, no camera. Angles are degrees from robot forward,
