@@ -79,13 +79,17 @@ only matter for the fallback heading.
   angle error plus the aim point's motion into a target speed, capped at `MAX_VELOCITY_DEG_S`;
   the velocity PID (`kP`, `kI`, feedforward `kV`, `kS`) holds that speed against the measured
   turret speed. "Turret vel / cmd" in telemetry shows measured vs commanded speed.
-- Starting position: with `GEAR_RATIO = 1` set `Turret.FORWARD_RAW_DEG` and `FORWARD_RAW2_DEG`
-  to the "Turret raw 1 / 2" telemetry values read with the turret facing forward, and the turret
-  can start anywhere - the wires are then absolute, and both OpModes say so on the init screen
-  ("absolute from the position wires"). TELEOP keeps that reading instead of AUTO's saved angle,
-  so nudging the ring between OpModes costs nothing. With any other ratio (or both left NaN) the
-  turret must face forward when an OpMode inits, unless the angle was handed over from AUTO
-  through `RobotState`, and the init screen says "must be FACING FORWARD now".
+- **Zeroing the turret**: point it forward and hold gamepad 2 **BACK** for 1 second in
+  `Shot Tuner`. That records both position wires as forward, takes effect immediately (so you
+  can check it reads 0 at forward and +90 a quarter turn right), and prints the two lines to
+  paste into `Turret.java` so it survives a restart. The manual equivalent is to read
+  "Turret raw 1 / 2" with the turret forward and type those numbers in.
+- Starting position: with `GEAR_RATIO = 1` and `FORWARD_RAW_DEG` / `FORWARD_RAW2_DEG` set as
+  above, the wires are absolute and the turret can start anywhere; both OpModes say so on the
+  init screen ("absolute from the position wires"). TELEOP keeps that reading instead of AUTO's
+  saved angle, so nudging the ring between OpModes costs nothing. With any other ratio (or both
+  left NaN) the turret must face forward when an OpMode inits, unless the angle was handed over
+  from AUTO through `RobotState`, and the init screen says "must be FACING FORWARD now".
 - Tuning order in `Shot Tuner`: measure `kV` first (full power in MANUAL mode, read "Turret
   vel", kV = 1 / that speed in deg/s), then raise vel `kP` until the measured speed follows the
   commanded speed without oscillating, then pos `kP` until it snaps to target without
@@ -130,8 +134,7 @@ The shot table is not hand-typed: it is generated from physics when the code loa
   speed. `EFFICIENCY_TRIM` (measured / predicted) is the one number to fit on the robot from a
   chronograph or one calibrated distance.
 - **Flight.** Point mass with gravity and quadratic air drag (POLLEN: 2.8 in, 24.9 g, Cd 0.47),
-  integrated in 2 ms steps from `LAUNCH_HEIGHT_IN`. Gamepad 2 B in TeleOp switches the table
-  to NECTAR (3.62 in, 41.3 g) and back.
+  integrated in 2 ms steps from `LAUNCH_HEIGHT_IN`.
 - **Hood.** The opening is tipped toward the shooter, so the ball must arrive descending. The
   exit angle follows the lob geometry `tan(exit) = 2h/d + tan(ENTRY_ANGLE_DEG)` (h = opening
   height above the launch, d = distance): near-vertical up close, flatter far away, clamped to
@@ -158,9 +161,12 @@ proportional to trim × RPM, so the ratio between the RPM the model wants and th
 a restart) rebuilds the whole table and its regression. Copying individual `Table row` lines
 still works if you would rather hand-fit.
 
-Both balls' tables are solved when `ShotTable` loads, so switching POLLEN/NECTAR during a match
-is an array copy (~0.02 ms) rather than a re-solve. Doing the solve on the button would stall
-the loop about a fifth of a second on a Control Hub, with the turret and flywheel frozen.
+**The shooter fires POLLEN only.** There is one table, solved once when `ShotTable` loads
+(during OpMode init), and nothing switches it at run time. NECTAR is still in `Field` and
+`GamePiece` because the rules need it - the 3 NECTAR staged in the up CELL are what make 3
+POLLEN enough to tip the HIVE, and the vision has to recognise the opponent's NECTAR to leave
+it alone (G408) - but it never goes through the flywheel. Never call `regenerate()` from a
+control loop: solving the table costs about a fifth of a second on a Control Hub.
 
 ## BIOBUZZ game facts the code relies on (Competition Manual V1 / TU01, Field Setup Guide V1.0)
 
@@ -250,7 +256,7 @@ What the suite proved, on the field geometry in `Field.java`:
 | Test | Result |
 | --- | --- |
 | `AutoSimTest` | `RED AUTO` and `BLUE AUTO`, 30 s each: **36 AUTO points** (LEAVE 3 + TIP 20 + PARK 5 + 8 left in the CELL), 7 of 7 shots in, HIVE tipped once, GARDEN POLLEN collected, an opponent NECTAR correctly ignored |
-| `ShootingPhysicsTest` | the cubic regression fits the physics to 0.03 %; POLLEN drops through the CELL mouth from 18 to 78 in; 20 % slow or 25 % fast misses; NECTAR needs no separate table |
+| `ShootingPhysicsTest` | the cubic regression fits the physics to 0.03 %; POLLEN drops through the CELL mouth from 18 to 78 in; 20 % slow or 25 % fast misses; the table is a pure function of the `Ballistics` constants, so re-solving never moves a row |
 | `TurretTrackingSimTest` | settled error 0.14 deg, 95th percentile 3.6 deg while spinning at 75 deg/s and driving; a glitching position wire moves the turret 0.7 deg and is flagged |
 | `PollenVisionSimTest` | the GARDEN line is located 0.8 in from truth and NECTAR is ignored |
 | `TeleOpSimTest` | `Biobuzz TeleOp` under a simulated driver: the stick mapping drives forward / strafes right / turns clockwise as labelled, the turret holds the CELL to 3.2 deg while the driver drives, the trigger and bumper work the intake and blocker, holding fire from the shooting spot scores, and the AUTO hand-off restores the pose and up CELL |

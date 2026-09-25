@@ -26,10 +26,13 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
  * Gamepad 2
  *   dpad up/down: pick a gain   dpad right/left: gain x1.25 / /1.25   B: gain = 0
  *   A: turret auto-aim on/off (off = hold forward)
+ *   hold BACK 1 s: ZERO THE TURRET here - point it forward first. Takes effect immediately and
+ *     prints the two lines to paste into Turret.java so it survives a restart.
  * Init: gamepad 1 X = blue, B = red
  */
 @TeleOp(name = "Shot Tuner", group = "Tuning")
 public class ShotTuner extends OpMode {
+    private static final long ZERO_HOLD_MS = 1000;
     private static final String[] GAIN_NAMES = {
             "Turret pos kP", "Turret pos kI", "Turret vel kP", "Turret vel kI", "Turret kV", "Turret kS",
             "Shooter kP", "Shooter kI", "Shooter kV", "Shooter kS"
@@ -47,6 +50,8 @@ public class ShotTuner extends OpMode {
     private double manualHood = Double.NaN;
     private int selectedGain = 0;
     private boolean firing = false;
+    private long zeroHeldSince = 0;
+    private String zeroNote = "";
 
     @Override
     public void init() {
@@ -125,6 +130,7 @@ public class ShotTuner extends OpMode {
 
         handleShotValues(distance);
         handleGains();
+        handleTurretZero();
 
         shooter.setOverridePower(gamepad1.back ? 1.0 : Double.NaN);
         shooter.update();
@@ -181,6 +187,34 @@ public class ShotTuner extends OpMode {
             shooter.setHood(manualHood);
         } else {
             shooter.setShotDistance(distance, 0.0);
+        }
+    }
+
+    /**
+     * Zero the turret where it is standing: record both position wires' raw angles as "forward"
+     * and tell the turret it is at 0. Held rather than tapped, because it redefines the
+     * reference every later reading is measured against and a stray press mid-tuning would
+     * quietly move the target by however far the turret happened to be pointing.
+     *
+     * This only lasts as long as the OpMode, so the two values are printed in a form that can
+     * go straight into Turret.java.
+     */
+    private void handleTurretZero() {
+        if (!gamepad2.back) {
+            zeroHeldSince = 0;
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (zeroHeldSince == 0) {
+            zeroHeldSince = now;
+        } else if (zeroHeldSince > 0 && now - zeroHeldSince >= ZERO_HOLD_MS) {
+            Turret.FORWARD_RAW_DEG = turret.getRawDeg();
+            Turret.FORWARD_RAW2_DEG = turret.getRaw2Deg();
+            turret.setAngleReference(0.0);
+            zeroNote = String.format("FORWARD_RAW_DEG = %.1f;   FORWARD_RAW2_DEG = %.1f;",
+                    Turret.FORWARD_RAW_DEG, Turret.FORWARD_RAW2_DEG);
+            gamepad2.rumble(300);
+            zeroHeldSince = -1; // done, wait for release
         }
     }
 
@@ -271,6 +305,11 @@ public class ShotTuner extends OpMode {
                     Ballistics.EFFICIENCY_TRIM * rpmModel / manualRPM, rpmModel, manualRPM, distance);
         }
         telemetry.addData("Gain (gamepad 2)", "%s = %.6f", GAIN_NAMES[selectedGain], getGain(selectedGain));
+        if (zeroNote.isEmpty()) {
+            telemetry.addData("Turret zero", "point it forward, then hold gamepad 2 BACK for 1 s");
+        } else {
+            telemetry.addData("TURRET ZEROED - paste into Turret.java", zeroNote);
+        }
         telemetry.update();
     }
 }

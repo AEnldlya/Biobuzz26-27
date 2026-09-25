@@ -85,90 +85,36 @@ public class ShootingPhysicsTest {
     }
 
     /**
-     * POLLEN (2.8 in, 24.9 g) and NECTAR (3.62 in, 41.3 g) turn out to have almost the same
-     * drag area per unit mass (0.1596 vs 0.1608 m^2/kg), so one RPM table serves both: no
-     * re-tuning when the shooter is fed NECTAR. This pins that down so a future change to the
-     * published masses shows up here.
+     * The shooter fires POLLEN only, so there is one table and nothing switches it at run time.
+     * What that has to buy us is determinism: the table must be a pure function of the
+     * Ballistics constants, so re-solving it gives the same numbers every time. If it ever
+     * depended on mutable state that drifts, the shots would drift with it and the regression
+     * printed on the Driver Station would stop describing what the robot is doing.
      */
     @Test
-    public void nectarFliesLikePollen() {
-        double pollenRpm = ShotTable.rpm(48);
-        double pollenRatio = dragAreaPerMass(Field.POLLEN_DIAMETER_IN, Field.POLLEN_MASS_KG);
-        double nectarRatio = dragAreaPerMass(Field.NECTAR_DIAMETER_IN, Field.NECTAR_MASS_KG);
-        Ballistics.setNectar(true);
-        double nectarRpm;
-        try {
-            nectarRpm = ShotTable.rpm(48);
-        } finally {
-            Ballistics.setNectar(false);
+    public void theTableIsAPureFunctionOfTheBallisticsConstants() {
+        double[] first = ShotTable.RPM.clone();
+        double[] firstHood = ShotTable.HOOD.clone();
+        double[] firstRegression = ShotTable.REGRESSION.clone();
+        double firstError = ShotTable.regressionErrorFraction;
+
+        ShotTable.regenerate();
+        ShotTable.regenerate();
+
+        for (int i = 0; i < first.length; i++) {
+            assertEquals("row " + ShotTable.DISTANCE_IN[i] + " in moved on a re-solve",
+                    first[i], ShotTable.RPM[i], 1e-9);
+            assertEquals("hood at " + ShotTable.DISTANCE_IN[i] + " in moved on a re-solve",
+                    firstHood[i], ShotTable.HOOD[i], 1e-9);
         }
-        System.out.printf("48 in: POLLEN %.0f rpm, NECTAR %.0f rpm (drag area/mass %.4f vs %.4f m^2/kg)%n",
-                pollenRpm, nectarRpm, pollenRatio, nectarRatio);
-        assertEquals("drag area per mass should be within 2 %", 1.0, nectarRatio / pollenRatio, 0.02);
-        assertEquals("so the same RPM works for both, within 1 %", 1.0, nectarRpm / pollenRpm, 0.01);
-        assertEquals("switching back restores the POLLEN table", pollenRpm, ShotTable.rpm(48), 1e-6);
-        assertEquals("and the POLLEN ball", Field.POLLEN_DIAMETER_IN, Ballistics.BALL_DIAMETER_IN, 1e-9);
-    }
-
-    /**
-     * Switching balls happens on a button in the middle of a match, so it must not re-solve the
-     * table: every row bisects for an exit speed and every trial flies the ball in 2 ms steps,
-     * which costs a fifth of a second on a Control Hub - one frozen loop with the turret and
-     * flywheel not updating. Both tables are solved when ShotTable loads and the switch is a
-     * copy. The bound is deliberately 1000x the real cost so it only fires if someone puts the
-     * solve back on the button.
-     */
-    @Test
-    public void switchingBallsMidMatchDoesNotResolveTheTable() {
-        ShotTable.regenerate();                 // warm every class and JIT path first
-        Ballistics.setNectar(false);
-        double pollenRpm = ShotTable.rpm(48);
-
-        try {
-            long start = System.nanoTime();
-            Ballistics.setNectar(true);
-            double toNectarMs = (System.nanoTime() - start) / 1e6;
-            double nectarRpm = ShotTable.rpm(48);
-
-            start = System.nanoTime();
-            Ballistics.setNectar(false);
-            double backMs = (System.nanoTime() - start) / 1e6;
-
-            System.out.printf("ball switch: %.3f ms out, %.3f ms back%n", toNectarMs, backMs);
-            assertTrue("switching to NECTAR re-solved the table (" + toNectarMs + " ms)", toNectarMs < 2.0);
-            assertTrue("switching back re-solved the table (" + backMs + " ms)", backMs < 2.0);
-            assertTrue("the switch must still leave a usable NECTAR table, got " + nectarRpm,
-                    nectarRpm > 1000 && nectarRpm < 6000);
-            assertEquals("and switching back must restore POLLEN exactly", pollenRpm, ShotTable.rpm(48), 1e-9);
-        } finally {
-            Ballistics.setNectar(false);
+        for (int k = 0; k < firstRegression.length; k++) {
+            assertEquals("regression coefficient " + k + " moved on a re-solve",
+                    firstRegression[k], ShotTable.REGRESSION[k], 1e-9);
         }
+        assertEquals("fit error moved on a re-solve", firstError, ShotTable.regressionErrorFraction, 1e-12);
+        assertEquals("the ball is POLLEN", Field.POLLEN_DIAMETER_IN, Ballistics.BALL_DIAMETER_IN, 1e-9);
+        assertEquals("the ball is POLLEN", Field.POLLEN_MASS_KG, Ballistics.BALL_MASS_KG, 1e-12);
+        System.out.printf("POLLEN-only table is stable across re-solves; 48 in -> %.0f rpm%n", ShotTable.rpm(48));
     }
 
-    /** The cached table has to be what a full solve for that ball would have produced. */
-    @Test
-    public void theCachedTableMatchesAFullSolve() {
-        try {
-            Ballistics.setNectar(true);
-            double[] cached = new double[ShotTable.DISTANCE_IN.length];
-            System.arraycopy(ShotTable.RPM, 0, cached, 0, cached.length);
-            double cachedError = ShotTable.regressionErrorFraction;
-            int cachedUnsolved = ShotTable.unsolvedRows;
-
-            ShotTable.regenerate();             // re-solve with NECTAR selected
-            for (int i = 0; i < cached.length; i++) {
-                assertEquals("row " + ShotTable.DISTANCE_IN[i] + " in differs from a fresh solve",
-                        cached[i], ShotTable.RPM[i], 1e-9);
-            }
-            assertEquals("fit error differs from a fresh solve", cachedError, ShotTable.regressionErrorFraction, 1e-12);
-            assertEquals("unsolved rows differ from a fresh solve", cachedUnsolved, ShotTable.unsolvedRows);
-        } finally {
-            Ballistics.setNectar(false);
-        }
-    }
-
-    private static double dragAreaPerMass(double diameterIn, double massKg) {
-        double rM = diameterIn * 0.0254 / 2.0;
-        return Math.PI * rM * rM / massKg;
-    }
 }
