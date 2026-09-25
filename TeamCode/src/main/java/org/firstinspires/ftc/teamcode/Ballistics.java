@@ -26,10 +26,16 @@ package org.firstinspires.ftc.teamcode;
  * to measure: ball mass and diameter, wheel diameter, compression, launch height, hood range.
  */
 public final class Ballistics {
-    // ---- the ball: POLLEN by default (2.8 in, 24.9 g); setBall() switches to NECTAR ----
+    // ---- the ball ----
+    /**
+     * The shooter fires POLLEN only, so there is one ball and one table. NECTAR is still in
+     * Field and GamePiece because the rules need it - 3 NECTAR staged in the up CELL are what
+     * make 3 POLLEN enough to tip the HIVE, and the vision has to recognise the opponent's
+     * NECTAR in order to leave it alone (G408) - but it never goes through the flywheel.
+     * Measure these two on the real ball; they set the drag term.
+     */
     public static double BALL_DIAMETER_IN = Field.POLLEN_DIAMETER_IN;
     public static double BALL_MASS_KG = Field.POLLEN_MASS_KG;
-    private static boolean nectar = false;
     public static double DRAG_COEFFICIENT = 0.47;     // sphere
     public static double AIR_DENSITY_KG_M3 = 1.2;
     public static final double GRAVITY_IN_S2 = 386.09;
@@ -58,24 +64,6 @@ public final class Ballistics {
     public static double FLIGHT_DT_S = 0.002;
 
     private Ballistics() {
-    }
-
-    /**
-     * POLLEN or NECTAR in the shooter: the shot table switches to the other ball. Both tables
-     * were solved when ShotTable loaded, so this is a copy and is safe to call mid-match.
-     */
-    public static void setNectar(boolean shootNectar) {
-        if (shootNectar == nectar) {
-            return;
-        }
-        nectar = shootNectar;
-        BALL_DIAMETER_IN = nectar ? Field.NECTAR_DIAMETER_IN : Field.POLLEN_DIAMETER_IN;
-        BALL_MASS_KG = nectar ? Field.NECTAR_MASS_KG : Field.POLLEN_MASS_KG;
-        ShotTable.selectBall(nectar);
-    }
-
-    public static boolean isNectar() {
-        return nectar;
     }
 
     // ------------------------------------------------------------------ flywheel

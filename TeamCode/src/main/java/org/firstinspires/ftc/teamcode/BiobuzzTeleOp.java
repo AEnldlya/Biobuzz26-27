@@ -22,7 +22,6 @@ import org.firstinspires.ftc.teamcode.pedro.FusedPinpointLocalizer;
  *   A: toggle turret auto-aim / lock forward (fallback if odometry is off)
  *   dpad right/left: turret trim +/-3 deg   bumpers: +/-10 deg
  *   dpad up/down: flywheel RPM trim +/-50
- *   B: toggle shooting NECTAR (3.62 in) / POLLEN (2.8 in): different ball, different table
  *   hold X for 1 s: robot is back on its start spot, reset odometry to the start pose
  * Init
  *   gamepad 1 X = blue, B = red, A = ignore / use the position saved by AUTO
@@ -190,9 +189,6 @@ public class BiobuzzTeleOp extends OpMode {
         if (gamepad2.aWasPressed()) {
             turret.setMode(turret.getMode() == Turret.Mode.AUTO_AIM ? Turret.Mode.HOLD_FORWARD : Turret.Mode.AUTO_AIM);
         }
-        if (gamepad2.bWasPressed()) {
-            Ballistics.setNectar(!Ballistics.isNectar());
-        }
     }
 
     private void handleRelocalize() {
@@ -251,7 +247,7 @@ public class BiobuzzTeleOp extends OpMode {
         }
         turret.addTelemetry(telemetry);
         shooter.addTelemetry(telemetry);
-        telemetry.addData("RPM trim", "%+.0f  (shooting %s)", rpmTrim, Ballistics.isNectar() ? "NECTAR" : "POLLEN");
+        telemetry.addData("RPM trim", "%+.0f", rpmTrim);
         telemetry.addData("Loop", "%.1f ms", loopMs);
         telemetry.update();
     }

@@ -14,12 +14,10 @@ package org.firstinspires.ftc.teamcode;
  * calibration) with the Shot Tuner and call regenerate(); the whole table and regression
  * follow. Or set USE_REGRESSION = false and hand-edit RPM[] the old way.
  *
- * Solving the table is not cheap - every row bisects for an exit speed, and every trial flies
- * the ball in 2 ms steps - so it is done for BOTH balls when the class loads, and switching
- * between POLLEN and NECTAR during a match (gamepad 2 B) only copies one of them into place.
- * Doing the solve on the button press instead would stall the loop for a fifth of a second on
- * a Control Hub, with the turret and the flywheel frozen for that long, at the exact moment
- * the operator has decided to shoot something different.
+ * The shooter fires POLLEN only, so there is one table and nothing switches it at run time.
+ * Solving it is not cheap - every row bisects for an exit speed, and every trial flies the
+ * ball in 2 ms steps - so it happens once when the class loads, during OpMode init, where a
+ * few tens of milliseconds cost nothing. Never call regenerate() from inside a control loop.
  */
 public final class ShotTable {
     // the up CELL's mouth is 53.4 in from its wall and 59 in from the alliance wall, so the
@@ -37,29 +35,6 @@ public final class ShotTable {
     /** distances the physics could not solve at their hood angle (too close / too steep) */
     public static int unsolvedRows = 0;
 
-    /** a solved table for one ball, so switching balls is a copy instead of a solve */
-    private static final class Solved {
-        final double[] rpm;
-        final double[] hood;
-        final double[] tof;
-        final double[] regression;
-        final double errorFraction;
-        final int unsolved;
-
-        Solved(double[] rpm, double[] hood, double[] tof, double[] regression,
-               double errorFraction, int unsolved) {
-            this.rpm = rpm;
-            this.hood = hood;
-            this.tof = tof;
-            this.regression = regression;
-            this.errorFraction = errorFraction;
-            this.unsolved = unsolved;
-        }
-    }
-
-    private static Solved pollenTable;
-    private static Solved nectarTable;
-
     static {
         regenerate();
     }
@@ -68,80 +43,37 @@ public final class ShotTable {
     }
 
     /**
-     * Rebuild both balls' tables and regressions from the current Ballistics constants, and
-     * make the ball now in the shooter the live one. Call this after changing anything in
-     * Ballistics (the Shot Tuner does).
+     * Rebuild the table and its regression from the current Ballistics constants. Call this
+     * after changing anything in Ballistics (the Shot Tuner tells you what to change), never
+     * from a control loop.
      */
     public static void regenerate() {
-        double diameter = Ballistics.BALL_DIAMETER_IN;
-        double mass = Ballistics.BALL_MASS_KG;
-        try {
-            Ballistics.BALL_DIAMETER_IN = Field.POLLEN_DIAMETER_IN;
-            Ballistics.BALL_MASS_KG = Field.POLLEN_MASS_KG;
-            pollenTable = solve();
-            Ballistics.BALL_DIAMETER_IN = Field.NECTAR_DIAMETER_IN;
-            Ballistics.BALL_MASS_KG = Field.NECTAR_MASS_KG;
-            nectarTable = solve();
-        } finally {
-            Ballistics.BALL_DIAMETER_IN = diameter;
-            Ballistics.BALL_MASS_KG = mass;
-        }
-        apply(Ballistics.isNectar() ? nectarTable : pollenTable);
-    }
-
-    /**
-     * Point the live table at the ball now in the shooter. Microseconds: nothing is re-solved,
-     * which is what makes switching safe to do in the middle of a match.
-     */
-    public static void selectBall(boolean nectar) {
-        if (pollenTable == null || nectarTable == null) {
-            regenerate();
-            return;
-        }
-        apply(nectar ? nectarTable : pollenTable);
-    }
-
-    private static void apply(Solved table) {
-        System.arraycopy(table.rpm, 0, RPM, 0, RPM.length);
-        System.arraycopy(table.hood, 0, HOOD, 0, HOOD.length);
-        System.arraycopy(table.tof, 0, TIME_OF_FLIGHT_S, 0, TIME_OF_FLIGHT_S.length);
-        REGRESSION = table.regression.clone();
-        regressionErrorFraction = table.errorFraction;
-        unsolvedRows = table.unsolved;
-    }
-
-    /** Solve every row for whichever ball is currently set in Ballistics. */
-    private static Solved solve() {
         double target = Field.CELL_OPENING_HEIGHT_IN - Ballistics.LAUNCH_HEIGHT_IN;
-        double[] rpm = new double[DISTANCE_IN.length];
-        double[] hood = new double[DISTANCE_IN.length];
-        double[] tof = new double[DISTANCE_IN.length];
-        int unsolved = 0;
+        unsolvedRows = 0;
         double lastGood = Double.NaN;
         for (int i = 0; i < DISTANCE_IN.length; i++) {
             double d = DISTANCE_IN[i];
             double angle = Ballistics.exitAngleDeg(d);
             double v = Ballistics.solveExitSpeed(d, angle, target);
-            hood[i] = Ballistics.hoodServoForAngle(angle);
+            HOOD[i] = Ballistics.hoodServoForAngle(angle);
             if (Double.isNaN(v)) {
-                unsolved++;
-                rpm[i] = Double.isNaN(lastGood) ? 3000.0 : lastGood;
-                tof[i] = i > 0 ? tof[i - 1] : 0.5;
+                unsolvedRows++;
+                RPM[i] = Double.isNaN(lastGood) ? 3000.0 : lastGood;
+                TIME_OF_FLIGHT_S[i] = i > 0 ? TIME_OF_FLIGHT_S[i - 1] : 0.5;
                 continue;
             }
-            rpm[i] = Ballistics.rpmForExitSpeed(v);
-            lastGood = rpm[i];
+            RPM[i] = Ballistics.rpmForExitSpeed(v);
+            lastGood = RPM[i];
             Ballistics.Flight flight = Ballistics.fly(v, angle, Ballistics.LAUNCH_HEIGHT_IN, d + 50.0);
             double flightTime = flight.timeAt(d);
-            tof[i] = Double.isNaN(flightTime) ? 0.5 : flightTime;
+            TIME_OF_FLIGHT_S[i] = Double.isNaN(flightTime) ? 0.5 : flightTime;
         }
-        double[] regression = fitRegression(rpm);
-        double worst = 0.0;
+        REGRESSION = fitRegression(RPM);
+        regressionErrorFraction = 0.0;
         for (int i = 0; i < DISTANCE_IN.length; i++) {
-            double fit = evaluate(regression, DISTANCE_IN[i]);
-            worst = Math.max(worst, Math.abs(fit - rpm[i]) / rpm[i]);
+            double fit = evaluate(REGRESSION, DISTANCE_IN[i]);
+            regressionErrorFraction = Math.max(regressionErrorFraction, Math.abs(fit - RPM[i]) / RPM[i]);
         }
-        return new Solved(rpm, hood, tof, regression, worst, unsolved);
     }
 
     /** least-squares polynomial of degree REGRESSION_DEGREE through (DISTANCE_IN, rpmSamples) */
