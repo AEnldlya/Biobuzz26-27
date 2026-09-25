@@ -164,8 +164,13 @@ public abstract class AutoBase extends OpMode {
         telemetry.addData("Alliance", alliance());
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
         if (localizer != null) {
-            telemetry.addData("Pinpoint", "%s   hub IMU %s", localizer.status(), localizer.hasHubImu() ? "ok" : "none");
+            telemetry.addData("Pinpoint", "%s   hub IMU %s%s", localizer.status(),
+                    localizer.hasHubImu() ? "ok" : "none",
+                    localizer.poseWritePending() ? "   WAITING to set the start pose" : "");
         }
+        // the Pinpoint zeroes its own gyro at power-up, so a robot carried while booting starts
+        // with a bias that walks the heading - and the turret with it - all match
+        telemetry.addData("If the heading drifts", "power the robot on sitting still, then re-init");
         telemetry.addData("Limelight", vision.isConnected() ? "found, looking for " + TARGET_POLLEN : "NOT FOUND (fallback pickup only)");
         telemetry.addData("Turret", Turret.hasAbsoluteFeedback()
                 ? "absolute from the position wires: it can be anywhere"
