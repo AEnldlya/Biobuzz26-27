@@ -270,6 +270,10 @@ git checkout claude/simulator
 ./gradlew :TeamCode:testDebugUnitTest      # 15 tests, ~2 min, replays in TeamCode/build/sim/*.html
 ```
 
+Full instructions - prerequisites, Windows and Android Studio, what each output file is, and how
+to pull newer robot code in without a merge deleting the simulator - are in **`SIMULATOR.md`**
+on that branch.
+
 The robot code has three small seams so the simulator can stand in for hardware, and they are
 harmless (and useful) on the real robot:
 
