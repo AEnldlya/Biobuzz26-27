@@ -266,9 +266,16 @@ is needed to build or run the robot, and Android never packages `src/test` into 
 is kept off this branch so what you upload is only robot code. To use it:
 
 ```
+git fetch origin
 git checkout claude/simulator
 ./gradlew :TeamCode:testDebugUnitTest      # 15 tests, ~2 min, replays in TeamCode/build/sim/*.html
 ```
+
+Full instructions - prerequisites, Windows and Android Studio, what each output file is, and how
+to pull newer robot code in without a merge deleting the simulator - are in **`SIMULATOR.md`**
+on that branch. Do not merge the two branches in either direction: this branch's history carries
+the commit that removed `src/test`, so a merge tries to delete the simulator. Sync with
+`git checkout claude/turret-tracking-autonomous-opt-yv2u21 -- TeamCode/src/main` instead.
 
 The robot code has three small seams so the simulator can stand in for hardware, and they are
 harmless (and useful) on the real robot:
