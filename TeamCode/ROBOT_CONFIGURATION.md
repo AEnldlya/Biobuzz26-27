@@ -268,7 +268,7 @@ is kept off this branch so what you upload is only robot code. To use it:
 ```
 git fetch origin
 git checkout claude/simulator
-./gradlew :TeamCode:testDebugUnitTest      # 15 tests, ~2 min, replays in TeamCode/build/sim/*.html
+./gradlew :TeamCode:testDebugUnitTest      # 15 tests, ~20 s, replays in TeamCode/build/sim/*.html
 ```
 
 Full instructions - prerequisites, Windows and Android Studio, what each output file is, and how
