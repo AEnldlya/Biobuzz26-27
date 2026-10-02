@@ -9,25 +9,29 @@ import com.qualcomm.robotcore.hardware.Gamepad;
 
 import org.firstinspires.ftc.teamcode.Alliance;
 import org.firstinspires.ftc.teamcode.AutoBase;
-import org.firstinspires.ftc.teamcode.BlueAuto;
 import org.firstinspires.ftc.teamcode.Field;
-import org.firstinspires.ftc.teamcode.RedAuto;
 import org.firstinspires.ftc.teamcode.vision.GamePiece;
-import org.junit.Test;
 
 import java.io.File;
 
 /**
- * Runs the real RED AUTO / BLUE AUTO OpModes on the BIOBUZZ field for a full 30 s (real time,
- * the code uses wall-clock timers) and scores it like the rules do: the robot starts on its
- * wall with 4 POLLEN, the up CELL holds 3 NECTAR, 3 POLLEN tip the HIVE (20), the GARDEN has
- * 4 POLLEN in the corner, LEAVE is 3, PARK in the LOADING ZONE is 5, and elements left in the
- * up CELL are 2 each.
+ * One alliance's full autonomous on the BIOBUZZ field, scored like the rules do: the robot
+ * starts on its wall with 4 POLLEN, the up CELL holds 3 NECTAR, 3 POLLEN tip the HIVE (20), the
+ * GARDEN has 4 POLLEN in the corner, LEAVE is 3, PARK in the LOADING ZONE is 5, and elements
+ * left in the up CELL are 2 each.
  *
- * The replay is written to TeamCode/build/sim/auto_red.html (open it in a browser).
+ * RED and BLUE live in their own test classes (RedAutoSimTest, BlueAutoSimTest) rather than two
+ * methods of one class, because Gradle parallelises tests by CLASS. Each run takes about 14 s
+ * of wall clock - the robot code is on real timers, so a 30 s autonomous takes 30 s - and
+ * splitting them lets the two run side by side instead of back to back.
+ *
+ * Not named *Test, so Gradle does not try to run it as one.
  */
-public class AutoSimTest {
-    private static SimWorld run(AutoBase auto, Alliance alliance, String reportName) throws Exception {
+final class AutoScenario {
+    private AutoScenario() {
+    }
+
+    static SimWorld run(AutoBase auto, Alliance alliance, String reportName) throws Exception {
         SimWorld world = new SimWorld(alliance, 0.0).stagePerRules();
         // an opponent NECTAR lying near our GARDEN must be ignored (G408)
         Pose decoy = alliance.fromRed(new Pose(16, 6));
@@ -74,7 +78,7 @@ public class AutoSimTest {
         return world;
     }
 
-    private static void check(SimWorld world, AutoBase auto, Alliance alliance) {
+    static void check(SimWorld world, AutoBase auto, Alliance alliance) {
         assertEquals("auto should finish parked", AutoBase.State.DONE, auto.getState());
         assertTrue("tip volley not fired: " + world.shotsFired(), world.shotsFired() >= AutoBase.TIP_VOLLEY_BALLS);
         for (int i = 0; i < AutoBase.TIP_VOLLEY_BALLS; i++) {
@@ -104,17 +108,4 @@ public class AutoSimTest {
         assertTrue("AUTO points too low: " + world.pointsBreakdown(), world.autoPoints() >= 3 + 20 + 5 + 2);
     }
 
-    @Test
-    public void redAutoTipsCollectsScoresAndParks() throws Exception {
-        RedAuto auto = new RedAuto();
-        SimWorld world = run(auto, Alliance.RED, "auto_red");
-        check(world, auto, Alliance.RED);
-    }
-
-    @Test
-    public void blueAutoMirrorsRed() throws Exception {
-        BlueAuto auto = new BlueAuto();
-        SimWorld world = run(auto, Alliance.BLUE, "auto_blue");
-        check(world, auto, Alliance.BLUE);
-    }
 }

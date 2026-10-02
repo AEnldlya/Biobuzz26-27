@@ -28,6 +28,18 @@ android {
     testOptions {
         unitTests.returnDefaultValues = true
         unitTests.all {
+            // The simulation is sleep-bound, not CPU-bound: the robot code runs on wall-clock
+            // timers, so almost all of the suite's time is spent waiting for simulated seconds
+            // to pass rather than computing. Running test CLASSES side by side therefore costs
+            // nearly nothing and turns the total from the sum of the classes into the length of
+            // the longest one. Separate JVMs also keep the statics these tests set
+            // (Constants.localizerFactory, PollenVision.CAMERA_FACTORY, Turret.LEAD_GAIN,
+            // SimRobot.noiseSeed) from leaking between classes.
+            // -PsimForks=1 runs the suite the old serial way, which is slower but leaves the
+            // most margin on the turret test's tracking thresholds (see TurretTrackingSimTest).
+            maxParallelForks = (project.findProperty('simForks') ?: Math.min(4,
+                    Runtime.runtime.availableProcessors())) as int
+
             testLogging {
                 events 'passed', 'failed', 'skipped'
                 showStandardStreams = true

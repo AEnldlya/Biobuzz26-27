@@ -31,10 +31,33 @@ In Android Studio: right-click the `org.firstinspires.ftc.teamcode.sim` package 
 `TeamCode/src/test/java` and choose **Run Tests**. Individual tests get a green arrow in the
 gutter.
 
-**15 tests, about two minutes.** It is slow on purpose: the robot code runs on wall-clock
-timers, so a 30-second autonomous takes 30 seconds of real time. Output streams live, so you
-can watch the AUTO state machine move through `TO_SCORE → SHOOT → TO_SCAN → … → PARK` and see
-each shot's distance, RPM and whether it went in.
+**15 tests, about 20 seconds.** Output streams live, so you can watch the AUTO state machine
+move through `TO_SCORE → SHOOT → TO_SCAN → … → PARK` and see each shot's distance, RPM and
+whether it went in.
+
+Most of that 20 s is spent waiting rather than computing: the robot code runs on wall-clock
+timers, so a 30-second autonomous takes 30 seconds of real time and a single AUTO run is the
+floor. Because the suite is sleep-bound rather than CPU-bound, test **classes** run in parallel
+(`maxParallelForks` in `TeamCode/build.gradle`), which turns the total from the sum of the
+classes into the length of the longest one - 57 s to 18 s on four cores. RED and BLUE AUTO are
+separate classes for exactly this reason, since Gradle parallelises by class, not by method.
+
+Separate JVMs also stop the statics these tests set (`Constants.localizerFactory`,
+`PollenVision.CAMERA_FACTORY`, `Turret.LEAD_GAIN`) leaking between classes.
+
+If you want the old serial behaviour:
+
+```bash
+./gradlew :TeamCode:testDebugUnitTest -PsimForks=1
+```
+
+That is worth knowing about for one reason: `TurretTrackingSimTest` reports a 95th-percentile
+tracking error of about 3.1° run serially and about 3.6° run in parallel, against an assertion
+limit of 4°. Both pass, repeatably, and 3.6° is the figure quoted in the docs. The difference is
+not loop rate (191-193 Hz either way), not scheduler stalls (the test now counts them and finds
+none), and not JIT warm-up (tried, made no difference) - it is simply not pinned down, so if you
+ever see that assertion fail by a hair, run it with `-PsimForks=1` before suspecting the robot
+code.
 
 One class at a time:
 
@@ -57,6 +80,10 @@ The replays are self-contained HTML; you can send one to a teammate.
 
 - **Results move slightly between runs.** Real-time timers mean loop timing is never identical,
   so shot distances and tracking errors wobble a little. The assertions have margin for it.
+- **`TurretTrackingSimTest` prints its own loop health** - average Hz, worst loop period, and how
+  many samples it dropped because the machine descheduled the test thread. If tracking numbers
+  ever look off, check those first: a loop a Control Hub would never have taken measures your
+  laptop, not the robot.
 - **If Gradle reports the test task `UP-TO-DATE`** and you wanted a fresh replay, add
   `--rerun-tasks`.
 - **Don't merge this branch into the robot branch, in either direction.** The robot branch's
