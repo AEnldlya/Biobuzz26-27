@@ -6,6 +6,7 @@ import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
 import org.firstinspires.ftc.teamcode.pedro.Constants;
+import org.firstinspires.ftc.teamcode.pedro.FusedPinpointLocalizer;
 
 /**
  * Gamepad 1
@@ -33,7 +34,7 @@ public class BiobuzzTeleOp extends OpMode {
 
     private Hubs hubs;
     private Follower follower;
-    private Claw claw;
+    private Intake intake;
     private Shooter shooter;
     private Turret turret;
 
@@ -52,10 +53,10 @@ public class BiobuzzTeleOp extends OpMode {
         hubs = new Hubs(hardwareMap);
         Battery battery = new Battery(hardwareMap);
         follower = Constants.create(hardwareMap);
-        claw = new Claw(hardwareMap);
+        intake = new Intake(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
-        turret = new Turret(hardwareMap, battery);
+        turret = new Turret(hardwareMap);
 
         alliance = RobotState.alliance;
         useSavedPose = RobotState.pose != null;
@@ -66,13 +67,20 @@ public class BiobuzzTeleOp extends OpMode {
         turret.setAlliance(alliance);
         if (useSavedPose) {
             follower.setPose(RobotState.pose);
-            turret.setAngleReference(RobotState.turretAngleDeg);
             turret.setUpCell(RobotState.upCell);
         } else {
             follower.setPose(Field.startPose(alliance));
-            // no hand-off: the turret has to be facing forward right now
-            turret.setAngleReference(0.0);
             turret.setUpCell(Field.startingUpCell(alliance));
+        }
+        // Where the turret is pointing is a question about the hardware, not about AUTO. With
+        // calibrated 1:1 position wires the reading is absolute and the constructor already has
+        // the right answer, so AUTO's last number must not overwrite it: if the ring was nudged
+        // between OpModes, or AUTO's estimate had drifted, taking the saved value would leave
+        // the turret confidently wrong by that much for the whole match with nothing in
+        // telemetry to show it. Only when the wires cannot say (geared down, or forward not
+        // calibrated) is the hand-off the best estimate available.
+        if (!Turret.hasAbsoluteFeedback()) {
+            turret.setAngleReference(useSavedPose ? RobotState.turretAngleDeg : 0.0);
         }
     }
 
@@ -103,10 +111,14 @@ public class BiobuzzTeleOp extends OpMode {
         if (useSavedPose) {
             telemetry.addData("Start", "position saved by AUTO (A to ignore)");
         } else if (RobotState.pose != null) {
-            telemetry.addData("Start", "default start pose, turret facing forward (A to use AUTO's)");
+            telemetry.addData("Start", "default start pose (A to use AUTO's)");
         } else {
-            telemetry.addData("Start", "default start pose, turret must face forward");
+            telemetry.addData("Start", "default start pose");
         }
+        telemetry.addData("Turret start", Turret.hasAbsoluteFeedback()
+                ? "absolute from the position wires: it can be anywhere"
+                : useSavedPose ? "AUTO's last angle (no absolute feedback)"
+                        : "assumed FACING FORWARD - point it forward now");
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
         telemetry.addData("Up CELL", turret.getUpCell());
         telemetry.update();
@@ -134,7 +146,7 @@ public class BiobuzzTeleOp extends OpMode {
         shooter.setShotDistance(turret.getDistance(), rpmTrim);
         shooter.update();
 
-        handleClaw();
+        handleIntake();
 
         boolean ready = turret.isOnTarget() && shooter.atSpeed() && Field.isOnOpeningSide(pose, turret.getUpCell());
         if (ready && !wasReady) {
@@ -148,8 +160,7 @@ public class BiobuzzTeleOp extends OpMode {
 
     @Override
     public void stop() {
-        claw.stop();
-        claw.close();
+        intake.stop();
         shooter.stop();
         turret.stop();
     }
@@ -196,26 +207,22 @@ public class BiobuzzTeleOp extends OpMode {
         }
     }
 
-    private void handleClaw() {
+    private void handleIntake() {
         if (gamepad1.right_bumper) {
-            claw.feedForShot();
-            claw.release();
+            intake.shoot();
             firing = true;
             return;
         }
 
         if (firing) {
-            claw.close();
-            claw.stop();
+            intake.stop();
             firing = false;
         }
 
         if (gamepad1.right_trigger > 0.5 || gamepad2.right_trigger > 0.5) {
-            claw.close();
-            claw.run();
+            intake.intake();
         } else if (gamepad1.left_trigger > 0.5 || gamepad1.left_bumper) {
-            claw.close();
-            claw.stop();
+            intake.stop();
         }
     }
 
@@ -234,6 +241,10 @@ public class BiobuzzTeleOp extends OpMode {
         boolean openingSide = Field.isOnOpeningSide(pose, turret.getUpCell());
         telemetry.addData("Alliance", "%s %s", alliance, openingSide ? "" : "  WRONG SIDE OF HIVE");
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        FusedPinpointLocalizer localizer = Constants.fusedLocalizer(follower);
+        if (localizer != null && localizer.usingImuFallback()) {
+            telemetry.addData("Localizer", "PINPOINT %s - heading from hub IMU, position frozen", localizer.status());
+        }
         turret.addTelemetry(telemetry);
         shooter.addTelemetry(telemetry);
         telemetry.addData("RPM trim", "%+.0f", rpmTrim);
