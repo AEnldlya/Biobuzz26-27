@@ -6,7 +6,6 @@ import com.pedropathing.algorithm.ForesightConfig;
 import com.pedropathing.controllers.Controller;
 import com.pedropathing.drivetrain.Drivetrain;
 import com.pedropathing.follower.Follower;
-import com.pedropathing.localization.Localizer;
 import com.pedropathing.math.Matrix;
 import com.pedropathing.math.Vector2D;
 import com.pedropathing.revhub.drivetrains.Mecanum;
@@ -18,6 +17,7 @@ import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+import org.firstinspires.ftc.teamcode.FieldLocalizer;
 
 /**
  * Pedro Pathing 3.0 robot config.
@@ -49,6 +49,9 @@ public class Constants {
         c.yPodOffset.set(3.86);
         c.offsetUnits.set(DistanceUnit.CM);
         c.globalDistanceUnit.set(DistanceUnit.INCH);
+        // Pinpoint's internal IMU supplies heading; its two pods supply translation. Keep the
+        // robot still during INIT calibration. In-match pose resets do not recalibrate the IMU.
+        c.resetMode.set(PinpointLocalizer.ResetMode.RECALIBRATE_IMU);
         c.xPodDirection.set(GoBildaPinpointDriver.EncoderDirection.FORWARD);
         c.yPodDirection.set(GoBildaPinpointDriver.EncoderDirection.REVERSED);
     });
@@ -75,8 +78,8 @@ public class Constants {
         c.naturalStrafeDeceleration.set(79.305);
     });
 
-    public static Localizer localizer(HardwareMap hardwareMap) {
-        return new PinpointLocalizer(hardwareMap, localizerConfig);
+    public static FieldLocalizer localizer(HardwareMap hardwareMap) {
+        return new FieldLocalizer(hardwareMap, localizerConfig);
     }
 
     public static Drivetrain drivetrain(HardwareMap hardwareMap) {

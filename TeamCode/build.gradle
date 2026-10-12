@@ -27,3 +27,18 @@ android {
 dependencies {
     implementation project(':FtcRobotController')
 }
+
+// Deterministic geometry, shot-calibration and localization checks on the desktop JVM.
+// Use Android's resolved test classpath so the checks exercise our actual Pedro/FTC versions.
+def trackingCheckTasks = ['TurretAimTest', 'ShotTableTest', 'FieldLocalizerTest'].collect { checkName ->
+    tasks.register("check${checkName}", JavaExec) {
+        dependsOn 'compileDebugUnitTestJavaWithJavac'
+        mainClass = "org.firstinspires.ftc.teamcode.${checkName}"
+        classpath = files(provider { tasks.named('testDebugUnitTest').get().classpath })
+    }
+}
+tasks.register('trackingChecks') {
+    group = 'verification'
+    description = 'Run turret geometry, shot calibration, and pose reset checks without robot hardware.'
+    dependsOn trackingCheckTasks
+}

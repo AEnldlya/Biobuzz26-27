@@ -2,7 +2,6 @@ package org.firstinspires.ftc.teamcode;
 
 import com.pedropathing.math.Pose;
 import com.pedropathing.math.Velocity;
-import com.pedropathing.utils.Angle;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.HardwareMap;
@@ -49,6 +48,7 @@ public class Turret {
     public static double MAX_POWER = 0.9;
     public static double DEADBAND_DEG = 0.4;    // settled inside this: stop commanding, no chatter
     public static double ON_TARGET_DEG = 1.5;
+    public static double ON_TARGET_RATE_DEG_PER_SEC = 8.0;
     public static double VELOCITY_FILTER = 0.5; // weight of the newest turret velocity sample
     // when the target is only this far past a limit, stay pinned instead of swinging 360
     public static double WRAP_HYSTERESIS_DEG = 15.0;
@@ -57,6 +57,8 @@ public class Turret {
     // aim where the CELL will be relative to us when the ball arrives (uses
     // ShotTable.TIME_OF_FLIGHT_S); 0 turns shoot-while-moving compensation off
     public static double LEAD_GAIN = 1.0;
+    // Measured sensor/control + ball-release delay. Keep 0 until measured, at most 0.5 s.
+    public static double RELEASE_LATENCY_S = 0.0;
 
     public enum Mode {
         AUTO_AIM,
@@ -69,6 +71,7 @@ public class Turret {
     private final DcMotorEx encoder;
     private final Battery battery;
     private final PIDFController pidf = new PIDFController(kP, kI, kD, kV, kS);
+    private final TurretAim.FlightTimeModel flightTimeModel = ShotTable::timeOfFlight;
 
     private Mode mode = Mode.OFF;
     private Alliance alliance = Alliance.RED;
@@ -89,9 +92,12 @@ public class Turret {
     private double lastPowerWritten = Double.NaN;
     private double distanceIn = Double.NaN;
     private double trueDistanceIn = Double.NaN;
+    private double geometricAngleDeg = Double.NaN;
+    private double flightTimeS = Double.NaN;
     private boolean poseValid = false;
     private boolean limited = false;
     private long lastNs;
+    private boolean resetVelocitySample = true;
 
     public Turret(HardwareMap hardwareMap, Battery battery) {
         motor = hardwareMap.get(DcMotorEx.class, MOTOR_NAME);
@@ -108,36 +114,66 @@ public class Turret {
 
     /** Tell the turret its current angle (e.g. the angle AUTO ended at) instead of forward = 0. */
     public void setAngleReference(double currentAngleDeg) {
+        if (!isFinite(currentAngleDeg)) throw new IllegalArgumentException("Turret reference must be finite");
         zeroTicks = encoder.getCurrentPosition() - currentAngleDeg * ticksPerDegree() * ENCODER_DIRECTION;
         angleDeg = currentAngleDeg;
         lastAngleDeg = currentAngleDeg;
+        resetTracking();
+    }
+
+    /** Clear aiming history after a field-pose correction; does not change turret zero or trim. */
+    public void resetTracking() {
+        pidf.reset();
+        resetVelocitySample = true;
         velocityDegPerSec = 0.0;
+        invalidateAim();
+        lastNs = System.nanoTime();
+        applyPower(0.0);
+    }
+
+    private void invalidateAim() {
+        poseValid = false;
+        limited = false;
+        distanceIn = trueDistanceIn = geometricAngleDeg = flightTimeS = Double.NaN;
+        aimAngleDeg = targetDeg = errorDeg = Double.NaN;
+        aimRateDegPerSec = targetRateDegPerSec = 0.0;
     }
 
     public void update(Pose pose, Velocity velocity) {
         long now = System.nanoTime();
-        double dt = Math.min(Math.max((now - lastNs) / 1e9, 0.001), 0.1);
+        double elapsed = (now - lastNs) / 1e9;
+        double dt = Math.min(Math.max(elapsed, 0.001), 0.1);
         lastNs = now;
 
         angleDeg = readAngleDeg();
-        velocityDegPerSec += VELOCITY_FILTER * ((angleDeg - lastAngleDeg) / dt - velocityDegPerSec);
+        if (resetVelocitySample || elapsed > 0.25) {
+            velocityDegPerSec = 0.0;
+            resetVelocitySample = false;
+            pidf.reset();
+        } else {
+            double weight = Math.max(0.0, Math.min(1.0, VELOCITY_FILTER));
+            velocityDegPerSec += weight * ((angleDeg - lastAngleDeg) / Math.max(elapsed, 0.001) - velocityDegPerSec);
+        }
         lastAngleDeg = angleDeg;
 
-        poseValid = pose != null && isFinite(pose.x()) && isFinite(pose.y()) && isFinite(pose.heading());
+        invalidateAim();
+        poseValid = pose != null && isFinite(pose.x()) && isFinite(pose.y()) && isFinite(pose.heading())
+                && velocity != null && isFinite(velocity.vx) && isFinite(velocity.vy) && isFinite(velocity.omega);
         if (poseValid) {
             computeAim(pose, velocity);
+        }
+        if (!isFinite(angleDeg) || (mode == Mode.AUTO_AIM && !poseValid)) {
+            pidf.reset();
+            applyPower(0.0);
+            return;
         }
 
         double desired;
         double desiredRate = 0.0;
         switch (mode) {
             case AUTO_AIM:
-                if (poseValid) {
-                    desired = aimAngleDeg + trimDeg;
-                    desiredRate = aimRateDegPerSec;
-                } else {
-                    desired = angleDeg;
-                }
+                desired = aimAngleDeg + trimDeg;
+                desiredRate = aimRateDegPerSec;
                 break;
             case HOLD_FORWARD:
                 desired = 0.0;
@@ -153,11 +189,18 @@ public class Turret {
         }
 
         targetDeg = chooseReachable(desired, angleDeg);
+        if (!isFinite(targetDeg)) {
+            invalidateAim();
+            pidf.reset();
+            applyPower(0.0);
+            return;
+        }
         limited = Math.abs(wrapDeg(targetDeg - desired)) > 0.5;
         targetRateDegPerSec = limited ? 0.0 : desiredRate;
         errorDeg = targetDeg - angleDeg;
 
-        boolean settled = Math.abs(errorDeg) < DEADBAND_DEG && Math.abs(targetRateDegPerSec) < 2.0;
+        boolean settled = Math.abs(errorDeg) < DEADBAND_DEG && Math.abs(targetRateDegPerSec) < 2.0
+                && Math.abs(velocityDegPerSec) < 2.0;
         double output;
         if (settled) {
             pidf.reset();
@@ -174,84 +217,35 @@ public class Turret {
     }
 
     private void computeAim(Pose pose, Velocity velocity) {
-        double heading = pose.heading();
-        double cos = Math.cos(heading);
-        double sin = Math.sin(heading);
-        double offsetX = PIVOT_FORWARD_IN * cos - PIVOT_LEFT_IN * sin;
-        double offsetY = PIVOT_FORWARD_IN * sin + PIVOT_LEFT_IN * cos;
-        double pivotX = pose.x() + offsetX;
-        double pivotY = pose.y() + offsetY;
-
-        // field-frame velocity of the pivot: robot velocity plus spin carrying the offset around
-        double omega = 0.0;
-        double vx = 0.0;
-        double vy = 0.0;
-        if (velocity != null && isFinite(velocity.vx) && isFinite(velocity.vy) && isFinite(velocity.omega)) {
-            omega = velocity.omega;
-            vx = velocity.vx - omega * offsetY;
-            vy = velocity.vy + omega * offsetX;
-        }
-
         Pose cell = Field.cellAimPoint(alliance, upCell);
-        trueDistanceIn = Math.hypot(cell.x() - pivotX, cell.y() - pivotY);
-
-        double aimX = cell.x();
-        double aimY = cell.y();
-        if (LEAD_GAIN != 0.0) {
-            // two passes: flight time depends on distance, which depends on the lead
-            for (int i = 0; i < 2; i++) {
-                double flightTime = ShotTable.timeOfFlight(Math.hypot(aimX - pivotX, aimY - pivotY)) * LEAD_GAIN;
-                aimX = cell.x() - vx * flightTime;
-                aimY = cell.y() - vy * flightTime;
-            }
-        }
-
-        double dx = aimX - pivotX;
-        double dy = aimY - pivotY;
-        double rangeSquared = Math.max(dx * dx + dy * dy, 1.0);
-        distanceIn = Math.sqrt(rangeSquared);
-
-        // bearing relative to robot forward is counter-clockwise; turret angles are clockwise
-        double relative = Angle.normalizeSigned(Math.atan2(dy, dx) - heading);
-        aimAngleDeg = -Math.toDegrees(relative);
-
-        // d(atan2(dy, dx))/dt with the pivot moving at (vx, vy), minus the robot's own spin
-        double bearingRate = (dy * vx - dx * vy) / rangeSquared;
-        aimRateDegPerSec = -Math.toDegrees(bearingRate - omega);
+        TurretAim.Solution solution = TurretAim.solve(pose.x(), pose.y(), pose.heading(),
+                velocity.vx, velocity.vy, velocity.omega, cell.x(), cell.y(),
+                PIVOT_FORWARD_IN, PIVOT_LEFT_IN, RELEASE_LATENCY_S, LEAD_GAIN, flightTimeModel);
+        poseValid = solution.valid;
+        if (!poseValid) return;
+        trueDistanceIn = solution.geometricDistanceIn;
+        geometricAngleDeg = solution.geometricAngleDeg;
+        distanceIn = solution.distanceIn;
+        aimAngleDeg = solution.angleDeg;
+        aimRateDegPerSec = solution.rateDegPerSec;
+        flightTimeS = solution.flightTimeS;
     }
 
     private double chooseReachable(double desired, double current) {
-        double best = Double.NaN;
-        double bestGap = Double.POSITIVE_INFINITY;
-        for (int k = -2; k <= 2; k++) {
-            double candidate = desired + 360.0 * k;
-            if (candidate > MAX_ANGLE_DEG) {
-                if (candidate - MAX_ANGLE_DEG <= WRAP_HYSTERESIS_DEG && current > MAX_ANGLE_DEG - WRAP_HYSTERESIS_DEG) {
-                    return MAX_ANGLE_DEG;
-                }
-                continue;
-            }
-            if (candidate < MIN_ANGLE_DEG) {
-                if (MIN_ANGLE_DEG - candidate <= WRAP_HYSTERESIS_DEG && current < MIN_ANGLE_DEG + WRAP_HYSTERESIS_DEG) {
-                    return MIN_ANGLE_DEG;
-                }
-                continue;
-            }
-            double gap = Math.abs(candidate - current);
-            if (gap < bestGap) {
-                bestGap = gap;
-                best = candidate;
-            }
-        }
-        return Double.isNaN(best) ? Math.max(MIN_ANGLE_DEG, Math.min(MAX_ANGLE_DEG, desired)) : best;
+        return TurretAim.reachableAngle(desired, current, MIN_ANGLE_DEG, MAX_ANGLE_DEG, WRAP_HYSTERESIS_DEG);
     }
 
     private void applyPower(double requested) {
+        if (!isFinite(requested) || !isFinite(angleDeg) || !isFinite(POWER_DIRECTION)
+                || !isFinite(MIN_ANGLE_DEG) || !isFinite(MAX_ANGLE_DEG) || MIN_ANGLE_DEG > MAX_ANGLE_DEG) {
+            requested = 0.0;
+        }
+        requested = Math.max(-1.0, Math.min(1.0, requested));
         if ((angleDeg >= MAX_ANGLE_DEG && requested > 0.0) || (angleDeg <= MIN_ANGLE_DEG && requested < 0.0)) {
             requested = 0.0;
         }
         power = requested;
-        writePower(POWER_DIRECTION * requested);
+        writePower(requested == 0.0 ? 0.0 : Math.signum(POWER_DIRECTION) * requested);
     }
 
     private void writePower(double value) {
@@ -272,7 +266,7 @@ public class Turret {
     }
 
     private static double wrapDeg(double degrees) {
-        return Math.toDegrees(Angle.normalizeSigned(Math.toRadians(degrees)));
+        return TurretAim.wrapDeg(degrees);
     }
 
     private static boolean isFinite(double value) {
@@ -309,6 +303,7 @@ public class Turret {
 
     /** Positive = aim further right. */
     public void adjustTrim(double deltaDeg) {
+        if (!isFinite(deltaDeg)) return;
         trimDeg = Math.max(-TRIM_LIMIT_DEG, Math.min(TRIM_LIMIT_DEG, trimDeg + deltaDeg));
     }
 
@@ -331,12 +326,27 @@ public class Turret {
     }
 
     public boolean isOnTarget() {
-        return mode == Mode.AUTO_AIM && poseValid && !limited && Math.abs(errorDeg) <= ON_TARGET_DEG;
+        return mode == Mode.AUTO_AIM && poseValid && !limited && Math.abs(errorDeg) <= ON_TARGET_DEG
+                && Math.abs(targetRateDegPerSec - velocityDegPerSec) <= ON_TARGET_RATE_DEG_PER_SEC;
     }
 
     /** Distance to the (lead-adjusted) aim point, which is what the shooter should use. */
     public double getDistance() {
         return distanceIn;
+    }
+
+    /** Actual pivot-to-CELL distance before motion compensation. */
+    public double getGeometricDistance() {
+        return trueDistanceIn;
+    }
+
+    /** Actual CELL bearing relative to robot forward, clockwise degrees, before lead/trim. */
+    public double getGeometricAngleDeg() {
+        return geometricAngleDeg;
+    }
+
+    public boolean hasValidAim() {
+        return poseValid;
     }
 
     public double getAngleDeg() {
@@ -360,9 +370,12 @@ public class Turret {
     }
 
     public void addTelemetry(Telemetry telemetry) {
-        telemetry.addData("Turret", "%s  %s CELL up  %s", mode, upCell, isOnTarget() ? "ON TARGET" : limited ? "AT LIMIT" : "");
+        telemetry.addData("Turret", "%s  %s CELL up  %s", mode, upCell,
+                !poseValid ? "NO VALID AIM" : isOnTarget() ? "ON TARGET" : limited ? "AT LIMIT" : "TRACKING");
         telemetry.addData("Turret angle / target", "%.1f / %.1f (err %.1f)", angleDeg, targetDeg, errorDeg);
         telemetry.addData("Turret trim / power", "%.1f / %.2f", trimDeg, power);
         telemetry.addData("Distance to CELL", "%.1f in (lead %.1f in)", trueDistanceIn, distanceIn);
+        telemetry.addData("CELL bearing / flight", "%.1f deg CW / %.3f s", geometricAngleDeg, flightTimeS);
+        telemetry.addData("Turret rate / target", "%.1f / %.1f deg/s", velocityDegPerSec, targetRateDegPerSec);
     }
 }

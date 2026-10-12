@@ -8,26 +8,31 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 
 /**
- * Builds ShotTable and tunes the PIDF gains live.
+ * Collects ShotTable/regression measurements and tunes the PIDF gains live.
  *
  * Park at a distance, adjust RPM and hood until volleys go in, then copy the "Table row" line
- * into ShotTable. Cover the whole range you shoot from (at least 5 distances). Values changed
- * here are lost when the OpMode stops, so write them into the code.
+ * into ShotTable. Cover the whole range you shoot from (at least 5 distances). Record the
+ * physical hood angle above horizontal and measure release-to-target flight time separately.
+ * Fit RPM, angle in degrees and flight time in seconds versus horizontal distance in inches;
+ * enter coefficients and measured hood linkage mapping in ShotTable. Servo position is NOT
+ * an angle. Values changed here are lost when the OpMode stops, so write them into the code.
  *
  * Gamepad 1
  *   sticks: drive               hold right bumper: fire
  *   right trigger: intake       left trigger: stop intake
  *   dpad up/down: RPM +/-50     Y / A: RPM +/-250     dpad right/left: hood +/-0.01
- *   X: switch MANUAL values / TABLE values (manual starts from the table)
+ *   X: switch MANUAL values / MODEL values (manual starts from the configured table/fits)
  *   B: HIVE tipped, aim at the other CELL
  *   hold BACK: flywheel at full power, read "kV estimate" once the speed settles
  * Gamepad 2
  *   dpad up/down: pick a gain   dpad right/left: gain x1.25 / /1.25   B: gain = 0
  *   A: turret auto-aim on/off (off = hold forward)
+ *   hold X for 1 s: stationary at the measured start spot AND heading, reset field pose
  * Init: gamepad 1 X = blue, B = red
  */
 @TeleOp(name = "Shot Tuner", group = "Tuning")
 public class ShotTuner extends OpMode {
+    private static final long RELOCALIZE_HOLD_MS = 1000;
     private static final String[] GAIN_NAMES = {
             "Turret kP", "Turret kI", "Turret kD", "Turret kV", "Turret kS",
             "Shooter kP", "Shooter kI", "Shooter kV", "Shooter kS"
@@ -35,6 +40,7 @@ public class ShotTuner extends OpMode {
     private Hubs hubs;
     private Battery battery;
     private Follower follower;
+    private FieldLocalizer localization;
     private Claw claw;
     private Shooter shooter;
     private Turret turret;
@@ -45,12 +51,14 @@ public class ShotTuner extends OpMode {
     private double manualHood = Double.NaN;
     private int selectedGain = 0;
     private boolean firing = false;
+    private long relocalizeHeldSince = 0;
 
     @Override
     public void init() {
         hubs = new Hubs(hardwareMap);
         battery = new Battery(hardwareMap);
         follower = Constants.create(hardwareMap);
+        localization = (FieldLocalizer) follower.localizer;
         claw = new Claw(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
@@ -61,8 +69,9 @@ public class ShotTuner extends OpMode {
     }
 
     private void applyStartState() {
+        turret.resetTracking();
         turret.setAlliance(alliance);
-        if (RobotState.pose != null) {
+        if (RobotState.hasSavedPose()) {
             follower.setPose(RobotState.pose);
             turret.setAngleReference(RobotState.turretAngleDeg);
             turret.setUpCell(RobotState.upCell);
@@ -90,6 +99,9 @@ public class ShotTuner extends OpMode {
         Pose pose = follower.pose();
         telemetry.addData("Alliance", "%s   (gamepad 1: X blue, B red)", alliance);
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        localization.addTelemetry(telemetry);
+        telemetry.addData("Reset pose", "g2 hold X 1 s, stationary at start spot AND heading");
+        telemetry.addData("Shot calibration", ShotTable.calibrationStatus());
         telemetry.update();
     }
 
@@ -105,6 +117,7 @@ public class ShotTuner extends OpMode {
 
         follower.manual(-gamepad1.left_stick_y, -gamepad1.left_stick_x, -gamepad1.right_stick_x);
         follower.update();
+        handleRelocalize();
         Pose pose = follower.pose();
 
         if (gamepad1.bWasPressed()) {
@@ -113,7 +126,7 @@ public class ShotTuner extends OpMode {
         if (gamepad2.aWasPressed()) {
             turret.setMode(turret.getMode() == Turret.Mode.AUTO_AIM ? Turret.Mode.HOLD_FORWARD : Turret.Mode.AUTO_AIM);
         }
-        turret.update(pose, follower.velocity());
+        turret.update(localization.isReady() ? pose : null, follower.velocity());
         double distance = turret.getDistance();
 
         handleShotValues(distance);
@@ -140,12 +153,14 @@ public class ShotTuner extends OpMode {
             }
         }
 
-        RobotState.save(alliance, pose, turret);
+        RobotState.save(alliance, localization.isReady() ? pose : null, turret);
         addTelemetry(pose, distance);
     }
 
     @Override
     public void stop() {
+        follower.stop();
+        follower.drivetrain.stop();
         claw.stop();
         claw.close();
         shooter.stop();
@@ -154,15 +169,18 @@ public class ShotTuner extends OpMode {
 
     private void handleShotValues(double distance) {
         if (Double.isNaN(manualRPM)) {
-            manualRPM = ShotTable.rpm(distance);
-            manualHood = ShotTable.hood(distance);
+            seedManualValues(distance);
         }
         if (gamepad1.xWasPressed()) {
             manualValues = !manualValues;
             if (manualValues) {
-                manualRPM = ShotTable.rpm(distance);
-                manualHood = ShotTable.hood(distance);
+                seedManualValues(distance);
             }
+        }
+        if (!Double.isFinite(manualRPM) || !Double.isFinite(manualHood)) {
+            // A missing pose or unfinished fit must not turn into a guessed initial shot.
+            shooter.setShotDistance(Double.NaN, 0.0);
+            return;
         }
         if (gamepad1.dpadUpWasPressed()) manualRPM += 50;
         if (gamepad1.dpadDownWasPressed()) manualRPM -= 50;
@@ -170,7 +188,7 @@ public class ShotTuner extends OpMode {
         if (gamepad1.aWasPressed()) manualRPM -= 250;
         if (gamepad1.dpadRightWasPressed()) manualHood += 0.01;
         if (gamepad1.dpadLeftWasPressed()) manualHood -= 0.01;
-        manualRPM = Math.max(0.0, Math.min(7000.0, manualRPM));
+        manualRPM = Math.max(0.0, Math.min(Shooter.MAX_TARGET_RPM, manualRPM));
         manualHood = Math.max(0.0, Math.min(1.0, manualHood));
 
         if (manualValues) {
@@ -178,6 +196,31 @@ public class ShotTuner extends OpMode {
             shooter.setHood(manualHood);
         } else {
             shooter.setShotDistance(distance, 0.0);
+        }
+    }
+
+    private void seedManualValues(double distance) {
+        double candidateRPM = ShotTable.rpm(distance);
+        double candidateHood = ShotTable.hood(distance);
+        if (Double.isFinite(candidateRPM) && Double.isFinite(candidateHood)) {
+            manualRPM = candidateRPM;
+            manualHood = candidateHood;
+        }
+    }
+
+    private void handleRelocalize() {
+        if (!gamepad2.x) {
+            relocalizeHeldSince = 0;
+            return;
+        }
+        long now = System.nanoTime() / 1_000_000L;
+        if (relocalizeHeldSince == 0) {
+            relocalizeHeldSince = now;
+        } else if (relocalizeHeldSince > 0 && now - relocalizeHeldSince >= RELOCALIZE_HOLD_MS) {
+            follower.setPose(Field.startPose(alliance));
+            turret.resetTracking();
+            gamepad2.rumble(300);
+            relocalizeHeldSince = -1;
         }
     }
 
@@ -244,10 +287,18 @@ public class ShotTuner extends OpMode {
     }
 
     private void addTelemetry(Pose pose, double distance) {
-        telemetry.addData("Values", manualValues ? "MANUAL (X for table)" : "TABLE (X for manual)");
-        telemetry.addData("Table row", "distance %.0f -> RPM %.0f, hood %.3f",
+        telemetry.addData("Values", manualValues ? "MANUAL (X for model)" : "MODEL (X for manual)");
+        telemetry.addData("Table row", "distance %.2f in -> RPM %.0f, hood servo %.4f",
                 distance, shooter.getTargetRPM(), shooter.getHood());
+        double hoodAngleDeg = ShotTable.hoodPositionToAngleDegrees(shooter.getHood());
+        if (Double.isFinite(hoodAngleDeg)) {
+            telemetry.addData("Hood angle above horizontal", "%.2f deg (measured linkage map)", hoodAngleDeg);
+        } else {
+            telemetry.addData("Hood angle", "Measure degrees separately; servo linkage map is not calibrated");
+        }
+        telemetry.addData("Flight calibration", "Measure seconds from ball release to target; do not copy estimated flight time");
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        localization.addTelemetry(telemetry);
         turret.addTelemetry(telemetry);
         shooter.addTelemetry(telemetry);
         if (gamepad1.back && shooter.getRPM() > 100) {

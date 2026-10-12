@@ -21,7 +21,7 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
  *   A: toggle turret auto-aim / lock forward (fallback if odometry is off)
  *   dpad right/left: turret trim +/-3 deg   bumpers: +/-10 deg
  *   dpad up/down: flywheel RPM trim +/-50
- *   hold X for 1 s: robot is back on its start spot, reset odometry to the start pose
+ *   hold X for 1 s: stationary at the measured start spot AND heading, reset field pose
  * Init
  *   gamepad 1 X = blue, B = red, A = ignore / use the position saved by AUTO
  */
@@ -33,6 +33,7 @@ public class BiobuzzTeleOp extends OpMode {
 
     private Hubs hubs;
     private Follower follower;
+    private FieldLocalizer localization;
     private Claw claw;
     private Shooter shooter;
     private Turret turret;
@@ -52,17 +53,19 @@ public class BiobuzzTeleOp extends OpMode {
         hubs = new Hubs(hardwareMap);
         Battery battery = new Battery(hardwareMap);
         follower = Constants.create(hardwareMap);
+        localization = (FieldLocalizer) follower.localizer;
         claw = new Claw(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
         hubs.clearCache();
         turret = new Turret(hardwareMap, battery);
 
         alliance = RobotState.alliance;
-        useSavedPose = RobotState.pose != null;
+        useSavedPose = RobotState.hasSavedPose();
         applyStartState();
     }
 
     private void applyStartState() {
+        turret.resetTracking();
         turret.setAlliance(alliance);
         if (useSavedPose) {
             follower.setPose(RobotState.pose);
@@ -83,14 +86,17 @@ public class BiobuzzTeleOp extends OpMode {
         boolean changed = false;
         if (gamepad1.xWasPressed()) {
             alliance = Alliance.BLUE;
+            useSavedPose = false;
             changed = true;
         }
         if (gamepad1.bWasPressed()) {
             alliance = Alliance.RED;
+            useSavedPose = false;
             changed = true;
         }
-        if (gamepad1.aWasPressed() && RobotState.pose != null) {
+        if (gamepad1.aWasPressed() && RobotState.hasSavedPose()) {
             useSavedPose = !useSavedPose;
+            if (useSavedPose) alliance = RobotState.alliance;
             changed = true;
         }
         if (changed) {
@@ -101,13 +107,15 @@ public class BiobuzzTeleOp extends OpMode {
         Pose pose = follower.pose();
         telemetry.addData("Alliance", "%s   (gamepad 1: X blue, B red)", alliance);
         if (useSavedPose) {
-            telemetry.addData("Start", "position saved by AUTO (A to ignore)");
-        } else if (RobotState.pose != null) {
-            telemetry.addData("Start", "default start pose, turret facing forward (A to use AUTO's)");
+            telemetry.addData("Start", "saved field pose (A to ignore)");
+        } else if (RobotState.hasSavedPose()) {
+            telemetry.addData("Start", "default start pose, turret facing forward (A to use saved pose)");
         } else {
             telemetry.addData("Start", "default start pose, turret must face forward");
         }
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        localization.addTelemetry(telemetry);
+        telemetry.addData("Reset pose", "g2 hold X 1 s, stationary at start spot AND heading");
         telemetry.addData("Up CELL", turret.getUpCell());
         telemetry.update();
     }
@@ -125,29 +133,34 @@ public class BiobuzzTeleOp extends OpMode {
 
         follower.manual(-gamepad1.left_stick_y, -gamepad1.left_stick_x, -gamepad1.right_stick_x);
         follower.update();
-        Pose pose = follower.pose();
 
         handleTurretControls();
         handleRelocalize();
+        // Read AFTER any reset so aiming, readiness, telemetry and the hand-off all use the
+        // same coordinate frame in this loop. FieldLocalizer also clears the old velocity.
+        Pose pose = follower.pose();
 
-        turret.update(pose, follower.velocity());
+        turret.update(localization.isReady() ? pose : null, follower.velocity());
         shooter.setShotDistance(turret.getDistance(), rpmTrim);
         shooter.update();
 
         handleClaw();
 
-        boolean ready = turret.isOnTarget() && shooter.atSpeed() && Field.isOnOpeningSide(pose, turret.getUpCell());
+        boolean ready = localization.isReady() && turret.isOnTarget() && shooter.atSpeed()
+                && Field.isOnOpeningSide(pose, turret.getUpCell());
         if (ready && !wasReady) {
             gamepad1.rumble(150);
         }
         wasReady = ready;
 
-        RobotState.save(alliance, pose, turret);
+        RobotState.save(alliance, localization.isReady() ? pose : null, turret);
         addTelemetry(pose);
     }
 
     @Override
     public void stop() {
+        follower.stop();
+        follower.drivetrain.stop();
         claw.stop();
         claw.close();
         shooter.stop();
@@ -185,11 +198,13 @@ public class BiobuzzTeleOp extends OpMode {
             relocalizeHeldSince = 0;
             return;
         }
-        long now = System.currentTimeMillis();
+        long now = System.nanoTime() / 1_000_000L;
         if (relocalizeHeldSince == 0) {
             relocalizeHeldSince = now;
         } else if (relocalizeHeldSince > 0 && now - relocalizeHeldSince >= RELOCALIZE_HOLD_MS) {
             follower.setPose(Field.startPose(alliance));
+            turret.resetTracking();
+            wasReady = false;
             gamepad2.rumble(300);
             // -1: already done, wait for release
             relocalizeHeldSince = -1;
@@ -234,6 +249,8 @@ public class BiobuzzTeleOp extends OpMode {
         boolean openingSide = Field.isOnOpeningSide(pose, turret.getUpCell());
         telemetry.addData("Alliance", "%s %s", alliance, openingSide ? "" : "  WRONG SIDE OF HIVE");
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        localization.addTelemetry(telemetry);
+        telemetry.addData("Reset pose", "g2 hold X 1 s at start spot AND heading");
         turret.addTelemetry(telemetry);
         shooter.addTelemetry(telemetry);
         telemetry.addData("RPM trim", "%+.0f", rpmTrim);

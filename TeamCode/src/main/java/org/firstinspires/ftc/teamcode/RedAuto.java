@@ -19,6 +19,7 @@ public class RedAuto extends OpMode {
 
     private Hubs hubs;
     private Follower follower;
+    private FieldLocalizer localization;
     private Claw claw;
     private Shooter shooter;
     private Turret turret;
@@ -38,6 +39,7 @@ public class RedAuto extends OpMode {
         hubs = new Hubs(hardwareMap);
         Battery battery = new Battery(hardwareMap);
         follower = Constants.create(hardwareMap);
+        localization = (FieldLocalizer) follower.localizer;
         follower.setPose(startPose);
         claw = new Claw(hardwareMap);
         shooter = new Shooter(hardwareMap, battery);
@@ -48,7 +50,7 @@ public class RedAuto extends OpMode {
         turret.setUpCell(Field.startingUpCell(ALLIANCE));
 
         buildPaths();
-        RobotState.save(ALLIANCE, startPose, turret);
+        RobotState.save(ALLIANCE, null, turret);
     }
 
     @Override
@@ -56,7 +58,9 @@ public class RedAuto extends OpMode {
         hubs.clearCache();
         follower.update();
         Pose pose = follower.pose();
+        RobotState.save(ALLIANCE, localization.isReady() ? pose : null, turret);
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        localization.addTelemetry(telemetry);
         telemetry.update();
     }
 
@@ -74,15 +78,16 @@ public class RedAuto extends OpMode {
         follower.update();
         Pose pose = follower.pose();
 
-        turret.update(pose, follower.velocity());
+        turret.update(localization.isReady() ? pose : null, follower.velocity());
         shooter.setShotDistance(turret.getDistance(), 0.0);
         shooter.update();
 
         autonomousPathUpdate();
-        RobotState.save(ALLIANCE, pose, turret);
+        RobotState.save(ALLIANCE, localization.isReady() ? pose : null, turret);
 
         telemetry.addData("path state", pathState);
         telemetry.addData("Pose", "x %.1f  y %.1f  heading %.1f", pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        localization.addTelemetry(telemetry);
         turret.addTelemetry(telemetry);
         shooter.addTelemetry(telemetry);
         telemetry.update();
@@ -90,6 +95,8 @@ public class RedAuto extends OpMode {
 
     @Override
     public void stop() {
+        follower.stop();
+        follower.drivetrain.stop();
         claw.stop();
         claw.close();
         shooter.stop();

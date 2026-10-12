@@ -33,6 +33,7 @@ public class Shooter {
     public static double FULL_POWER_BELOW_RPM = 350.0;
     public static double READY_TOLERANCE_RPM = 100.0;
     public static double RPM_FILTER = 0.5;      // weight of the newest RPM sample
+    public static double MAX_TARGET_RPM = 7000.0; // verify the safe limit for the fitted hardware
 
     private static final double MIN_ENCODER_TICKS_PER_SEC = 5.0;
     private static final double ENCODER_CHECK_POWER = 0.35;
@@ -53,6 +54,7 @@ public class Shooter {
     private double overridePower = Double.NaN;
     private double lastPowerWritten = Double.NaN;
     private boolean encoderOk = true;
+    private boolean shotSettingsValid = true;
     private long noFeedbackSinceNs = 0;
     private long lastNs = 0;
 
@@ -72,17 +74,31 @@ public class Shooter {
         writePower(0.0);
     }
 
-    /** Sets flywheel speed and hood from the shot table. */
+    /** Sets a complete shot from the table/fits. Invalid solutions stop the wheel and hold hood. */
     public void setShotDistance(double distanceIn, double rpmTrim) {
-        setTargetRPM(ShotTable.rpm(distanceIn) + rpmTrim);
-        setHood(ShotTable.hood(distanceIn));
+        double shotRPM = ShotTable.rpm(distanceIn) + rpmTrim;
+        double shotHood = ShotTable.hood(distanceIn);
+        if (!finite(rpmTrim) || !validTargetRPM(shotRPM) || !finite(shotHood)
+                || shotHood < 0.0 || shotHood > 1.0) {
+            targetRPM = 0.0;
+            shotSettingsValid = false;
+            return;
+        }
+        setTargetRPM(shotRPM);
+        setHood(shotHood);
     }
 
     public void setTargetRPM(double rpm) {
-        targetRPM = Math.max(0.0, rpm);
+        shotSettingsValid = validTargetRPM(rpm);
+        targetRPM = shotSettingsValid ? rpm : 0.0;
     }
 
     public void setHood(double position) {
+        if (!finite(position)) {
+            targetRPM = 0.0;
+            shotSettingsValid = false;
+            return;
+        }
         double clipped = Math.max(0.0, Math.min(1.0, position));
         if (Double.isNaN(hood) || Math.abs(clipped - hood) > 0.002) {
             hoodServo.setPosition(clipped);
@@ -96,7 +112,8 @@ public class Shooter {
 
     /** Raw open-loop power for testing (e.g. measuring kV); NaN returns to closed loop. */
     public void setOverridePower(double power) {
-        overridePower = power;
+        overridePower = Double.isNaN(power) ? Double.NaN
+                : (finite(power) ? Math.max(0.0, Math.min(1.0, power)) : 0.0);
     }
 
     public void update() {
@@ -134,7 +151,7 @@ public class Shooter {
             pidf.maxIntegralOutput = MAX_I_POWER;
             output = feedforward + pidf.calculate(error, 0.0, 0.0, dt, false);
         }
-        power = Math.max(0.0, Math.min(1.0, output));
+        power = finite(output) ? Math.max(0.0, Math.min(1.0, output)) : 0.0;
 
         checkEncoder(now);
         writePower(power);
@@ -143,6 +160,8 @@ public class Shooter {
     private void readVelocity() {
         double velocity1 = Math.abs(motor1.getVelocity());
         double velocity2 = Math.abs(motor2.getVelocity());
+        if (!finite(velocity1)) velocity1 = 0.0;
+        if (!finite(velocity2)) velocity2 = 0.0;
         // an unplugged encoder reads 0, so average only when both are alive
         if (velocity1 > MIN_ENCODER_TICKS_PER_SEC && velocity2 > MIN_ENCODER_TICKS_PER_SEC) {
             ticksPerSecond = (velocity1 + velocity2) / 2.0;
@@ -150,7 +169,12 @@ public class Shooter {
             ticksPerSecond = Math.max(velocity1, velocity2);
         }
         double sample = ticksPerSecond / TICKS_PER_REV * 60.0;
-        rpm += RPM_FILTER * (sample - rpm);
+        if (!finite(sample) || !finite(RPM_FILTER) || TICKS_PER_REV <= 0.0) {
+            rpm = 0.0;
+            encoderOk = false;
+        } else {
+            rpm += Math.max(0.0, Math.min(1.0, RPM_FILTER)) * (sample - rpm);
+        }
     }
 
     private void checkEncoder(long now) {
@@ -168,6 +192,7 @@ public class Shooter {
     }
 
     private void writePower(double value) {
+        value = finite(value) ? Math.max(0.0, Math.min(1.0, value)) : 0.0;
         if (Double.isNaN(lastPowerWritten) || Math.abs(value - lastPowerWritten) > 0.005
                 || (value == 0.0 && lastPowerWritten != 0.0)) {
             motor1.setPower(value);
@@ -178,6 +203,7 @@ public class Shooter {
 
     public void stop() {
         enabled = false;
+        overridePower = Double.NaN;
         targetRPM = 0.0;
         pidf.reset();
         power = 0.0;
@@ -185,10 +211,20 @@ public class Shooter {
     }
 
     public boolean atSpeed() {
-        if (!enabled || targetRPM <= 0.0) {
+        if (!enabled || !shotSettingsValid || !encoderOk || !Double.isNaN(overridePower)
+                || ticksPerSecond <= MIN_ENCODER_TICKS_PER_SEC || targetRPM <= 0.0) {
             return false;
         }
-        return !encoderOk || Math.abs(targetRPM - rpm) <= READY_TOLERANCE_RPM;
+        return finite(rpm) && Math.abs(targetRPM - rpm) <= READY_TOLERANCE_RPM;
+    }
+
+    private static boolean validTargetRPM(double value) {
+        return finite(value) && finite(MAX_TARGET_RPM) && MAX_TARGET_RPM > 0.0
+                && value >= 0.0 && value <= MAX_TARGET_RPM;
+    }
+
+    private static boolean finite(double value) {
+        return !Double.isNaN(value) && !Double.isInfinite(value);
     }
 
     public double getRPM() {
@@ -216,8 +252,12 @@ public class Shooter {
     }
 
     public void addTelemetry(Telemetry telemetry) {
-        telemetry.addData("Shooter RPM / target", "%.0f / %.0f %s", rpm, targetRPM, atSpeed() ? "READY" : "");
+        telemetry.addData("Shooter RPM / target", "%.0f / %.0f %s", rpm, targetRPM, atSpeed() ? "SPEED OK" : "");
         telemetry.addData("Shooter power / hood", "%.2f / %.3f", power, hood);
+        telemetry.addData("Shot calibration", ShotTable.calibrationStatus());
+        if (!shotSettingsValid) {
+            telemetry.addData("Shot settings", "INVALID distance, fit, hood mapping, or RPM limit - wheel stopped");
+        }
         if (!encoderOk) {
             telemetry.addData("Shooter", "NO ENCODER FEEDBACK - feedforward only");
         }

@@ -18,9 +18,14 @@ public final class RobotState {
 
     public static void save(Alliance alliance, Pose pose, Turret turret) {
         RobotState.alliance = alliance;
-        RobotState.pose = pose;
+        // Never hand a stale or invalid localization sample to the next OpMode.
+        RobotState.pose = FieldLocalizer.isFinite(pose) ? pose : null;
         RobotState.turretAngleDeg = turret.getAngleDeg();
         RobotState.upCell = turret.getUpCell();
+    }
+
+    public static boolean hasSavedPose() {
+        return FieldLocalizer.isFinite(pose) && Double.isFinite(turretAngleDeg);
     }
 
     public static void clearPose() {
